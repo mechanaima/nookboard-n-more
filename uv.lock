@@ -443,6 +443,11 @@ dependencies = [
     { name = "pyyaml" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.141.1" },
@@ -451,6 +456,9 @@ requires-dist = [
     { name = "python-frontmatter", specifier = ">=1.3.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1.1" }]
 
 [[package]]
 name = "packaging"
