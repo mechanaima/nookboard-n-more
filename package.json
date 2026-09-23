@@ -1,0 +1,6 @@
+{
+  "name": "nookboard",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test static/js/*.test.js" }
+}
