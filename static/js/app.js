@@ -99,6 +99,17 @@ function renderRapid() {
     if (n.mood) cls += ` mood-${n.mood}`;
     li.className = cls;
     li.textContent = n.title;
+    if (n.tags && n.tags.length) {
+      const chips = document.createElement("span");
+      chips.className = "tags-chips";
+      for (const t of n.tags) {
+        const c = document.createElement("span");
+        c.className = "tag-chip";
+        c.textContent = "#" + t;
+        chips.appendChild(c);
+      }
+      li.appendChild(chips);
+    }
     li.onclick = () => openEditor(n.id);
     ul.appendChild(li);
   }
@@ -139,6 +150,7 @@ function renderEditor() {
   $("#note-signifier").value = n.signifier;
   $("#note-status").value = n.status;
   $("#note-dates").value = (n.dates || []).join(", ");
+  $("#note-tags").value = (n.tags || []).join(", ");
   const sel = $("#note-collection");
   sel.innerHTML = state.collections
     .map((c) => `<option ${c === n.collection ? "selected" : ""}>${c}</option>`)
@@ -193,6 +205,10 @@ async function saveEditor() {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  const tags = $("#note-tags").value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   await api.updateNote(state.activeId, {
     title: $("#note-title").value,
     body: $("#note-body").value,
@@ -200,6 +216,7 @@ async function saveEditor() {
     status: $("#note-status").value,
     collection: $("#note-collection").value,
     dates,
+    tags,
     mood: state.activeMood || null,
   });
   await refresh();

@@ -47,6 +47,7 @@ class Note:
     parent_id: Optional[str] = None
     created: date = field(default_factory=date.today)
     mood: Optional[str] = None
+    tags: list[str] = field(default_factory=list)
 
     def to_markdown(self) -> str:
         post = frontmatter.Post(self.body)
@@ -60,6 +61,7 @@ class Note:
             "parent_id": self.parent_id,
             "created": self.created.isoformat(),
             "mood": self.mood,
+            "tags": list(self.tags),
         }
         return frontmatter.dumps(post)
 
@@ -78,6 +80,7 @@ class Note:
             parent_id=meta.get("parent_id"),
             created=date.fromisoformat(meta["created"]) if "created" in meta else date.today(),
             mood=meta.get("mood"),
+            tags=list(meta.get("tags", []) or []),
         )
 
     def to_dict(self) -> dict:

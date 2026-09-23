@@ -29,9 +29,19 @@ CREATE TABLE IF NOT EXISTS notes (
     parent_id   TEXT,
     created     TEXT NOT NULL,
     mood        TEXT,
+    tags_csv    TEXT NOT NULL DEFAULT '',
     search_text TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notes_collection ON notes(collection);
+CREATE TABLE IF NOT EXISTS note_links (
+    source_id    TEXT NOT NULL,
+    target_title TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_links_target ON note_links(target_title);
+CREATE TABLE IF NOT EXISTS recurrence_state (
+    note_id  TEXT PRIMARY KEY,
+    last_run TEXT NOT NULL
+);
 """
 
 
@@ -46,11 +56,13 @@ class Database:
 
     def upsert(self, n: Note, mood: str | None = None) -> None:
         search_text = f"{n.title}\n{n.body}".lower()
+        tags_csv = ",".join(n.tags)
         self.conn.execute(
             """
             INSERT INTO notes (id, collection, title, body, signifier, status,
-                               dates_csv, parent_id, created, mood, search_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               dates_csv, parent_id, created, mood, tags_csv,
+                               search_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 collection=excluded.collection,
                 title=excluded.title,
@@ -61,6 +73,7 @@ class Database:
                 parent_id=excluded.parent_id,
                 created=excluded.created,
                 mood=COALESCE(excluded.mood, notes.mood),
+                tags_csv=excluded.tags_csv,
                 search_text=excluded.search_text
             """,
             (
@@ -68,7 +81,7 @@ class Database:
                 n.signifier.value, n.status.value,
                 ",".join(d.isoformat() for d in n.dates),
                 n.parent_id, n.created.isoformat(),
-                mood, search_text,
+                mood, tags_csv, search_text,
             ),
         )
         self.conn.commit()
@@ -113,8 +126,16 @@ class Database:
                     out[d] = out.get(d, 0) + 1
         return out
 
+    def filter_by_tag(self, tag: str) -> list[Note]:
+        like = f"%{tag}%"
+        rows = self.conn.execute(
+            "SELECT * FROM notes WHERE ',' || tags_csv || ',' LIKE ? ORDER BY created DESC",
+            (like,),
+        ).fetchall()
+        return [self._row_to_note(r) for r in rows]
+
     def rebuild_from(self, notes: Iterable[Note]) -> None:
-        self.conn.executescript("DELETE FROM notes;")
+        self.conn.executescript("DELETE FROM notes; DELETE FROM note_links; DELETE FROM recurrence_state;")
         for n in notes:
             self.upsert(n)
 
@@ -122,6 +143,8 @@ class Database:
     def _row_to_note(row: sqlite3.Row) -> Note:
         dates_csv = row["dates_csv"] or ""
         dates = [date.fromisoformat(d) for d in dates_csv.split(",") if d]
+        tags_csv = row["tags_csv"] or ""
+        tags = [t for t in tags_csv.split(",") if t]
         return Note(
             id=row["id"],
             collection=row["collection"],
@@ -132,4 +155,6 @@ class Database:
             dates=dates,
             parent_id=row["parent_id"],
             created=date.fromisoformat(row["created"]),
+            mood=row["mood"],
+            tags=tags,
         )

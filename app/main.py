@@ -25,6 +25,7 @@ class NoteIn(BaseModel):
     dates: list[date] = Field(default_factory=list)
     parent_id: Optional[str] = None
     mood: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
 
 
 def create_app(vault_root: Path | None = None) -> FastAPI:
@@ -47,12 +48,15 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
         return vault.collections()
 
     @app.get("/api/notes")
-    def list_notes(collection: Optional[str] = None, date: Optional[date] = None):
+    def list_notes(collection: Optional[str] = None, date: Optional[date] = None,
+                   tag: Optional[str] = None):
         notes = vault.list_all()
         if collection:
             notes = [n for n in notes if n.collection == collection]
         if date:
             notes = [n for n in notes if date in n.dates]
+        if tag:
+            notes = [n for n in notes if tag in n.tags]
         return [n.to_dict() for n in notes]
 
     @app.get("/api/notes/{note_id}")
@@ -74,6 +78,7 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
             dates=payload.dates,
             parent_id=payload.parent_id,
             mood=payload.mood,
+            tags=payload.tags,
             created=date.today(),
         )
         vault.write(note)
@@ -98,6 +103,7 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
             dates=new_dates,
             parent_id=payload.get("parent_id", existing.parent_id),
             mood=payload.get("mood", existing.mood),
+            tags=payload.get("tags", existing.tags),
             created=existing.created,
         )
         vault.write(updated)

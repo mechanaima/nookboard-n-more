@@ -88,6 +88,12 @@ button:hover { background: var(--surface2); }
 .editor-row select { flex: 1; min-width: 80px; }
 .dates-label { display: block; }
 #note-dates { width: 100%; }
+.tags-label { display: block; }
+#note-tags { width: 100%; }
+
+.tags-chips { display: inline-flex; gap: 2px; margin-left: 6px; flex-wrap: wrap; }
+.tag-chip { background: var(--surface2); color: var(--muted);
+  font-size: 11px; padding: 1px 6px; border-radius: 8px; }
 
 .mood-row { display: flex; align-items: center; gap: 4px; padding: 4px 0; }
 .mood-label { color: var(--muted); margin-right: 4px; font-size: 12px;
