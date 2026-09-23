@@ -1,6 +1,7 @@
 // static/js/app.js — orchestrates the four views.
 import { parseRapidInput } from "./rapid.js";
 import { monthGrid, shiftMonth } from "./calendar.js";
+import { extractWikilinks, renderWikilinks } from "./wikilink.js";
 
 const api = {
   async listNotes()      { return (await fetch("/api/notes")).json(); },
@@ -167,8 +168,10 @@ function renderEditor() {
 function renderPreview() {
   if (!state.activeId) return;
   const md = $("#note-body").value || "";
-  // marked is loaded as a global script (UMD)
-  const html = window.marked ? window.marked.parse(md) : escapeHtml(md);
+  const titles = new Set(state.notes.map((n) => n.title));
+  // wikilinks must render first so marked doesn't mangle the HTML.
+  const pre = renderWikilinks(md, titles);
+  const html = window.marked ? window.marked.parse(pre) : escapeHtml(pre);
   $("#note-preview").innerHTML = html;
 }
 
