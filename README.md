@@ -47,6 +47,17 @@ Type into the rapid-log box:
 Status is updated in the editor pane: `open`, `complete`, `migrated`,
 `scheduled`, `irrelevant`.
 
+## Features (v2)
+
+- **Rapid Log** — type `• task`, `○ event`, `– note` and hit Enter
+- **Collections** — NeatNook-style curation, create + filter
+- **Timeline** — Agenda-style date-filter view
+- **Calendar** — month grid with per-day counts, click-through
+- **Search** — topbar search box, live dropdown
+- **Markdown preview** — split / write / preview tabs, live render
+- **Mood tags** — emoji picker on every note
+- **Migration** — task states: open → complete / migrated / scheduled / irrelevant
+
 ## API
 
 - `GET    /api/health`
@@ -56,10 +67,29 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
 - `POST   /api/notes`
 - `PATCH  /api/notes/{id}`
 - `DELETE /api/notes/{id}`
+- `GET    /api/search?q=`
+- `GET    /api/calendar/{year}/{month}` → `{"YYYY-MM-DD": count, ...}`
+- `POST   /api/rebuild-index` (rebuild DB from .md files)
+
+## Where data lives
+
+```
+vault/
+  .index.sqlite       # SQLite index (rebuilt from .md files if missing)
+  inbox/<id>.md
+  home/<id>.md
+  work/<id>.md
+```
+
+Markdown on disk is the source of truth. The SQLite index powers
+search and calendar aggregation. Delete `vault/.index.sqlite` and
+restart — the app rebuilds it from the `.md` files.
 
 ## Stack
 
 - Python 3.13, FastAPI, uvicorn
 - python-frontmatter for note serialization
+- SQLite (stdlib) for the search / calendar index
 - Vanilla JS, no build step, no framework
+- `marked` (vendored, MIT) for Markdown rendering
 - Catppuccin Mocha theme
