@@ -9,12 +9,13 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from pydantic import BaseModel, Field
 
 from .models import Note, Signifier, Status
 from .vault import Vault
 from .db import Database
+from .ics import notes_to_ics
 
 
 class NoteIn(BaseModel):
@@ -154,6 +155,15 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
             buf,
             media_type="application/zip",
             headers={"Content-Disposition": 'attachment; filename="nookboard-vault.zip"'},
+        )
+
+    @app.get("/api/calendar.ics")
+    def calendar_ics():
+        body = notes_to_ics(vault.list_all())
+        return Response(
+            content=body,
+            media_type="text/calendar; charset=utf-8",
+            headers={"Content-Disposition": 'inline; filename="nookboard.ics"'},
         )
 
     @app.post("/api/rebuild-index", status_code=200)
