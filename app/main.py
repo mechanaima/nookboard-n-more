@@ -1,13 +1,15 @@
 """FastAPI application factory."""
 from __future__ import annotations
 
+import io
+import zipfile
 from pathlib import Path
 from datetime import date
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .models import Note, Signifier, Status
@@ -140,6 +142,19 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
     def trigger_recurring():
         today = date.today()
         return {"created": [n.to_dict() for n in db.run_recurring(today)]}
+
+    @app.get("/api/export.zip")
+    def export_zip():
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for md in sorted(vault.root.rglob("*.md")):
+                z.write(md, md.relative_to(vault.root))
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="nookboard-vault.zip"'},
+        )
 
     @app.post("/api/rebuild-index", status_code=200)
     def rebuild_index():
