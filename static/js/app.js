@@ -1,5 +1,6 @@
-// static/js/app.js — orchestrates the three views.
+// static/js/app.js — orchestrates the four views.
 import { parseRapidInput } from "./rapid.js";
+import { monthGrid, shiftMonth } from "./calendar.js";
 
 const api = {
   async listNotes()      { return (await fetch("/api/notes")).json(); },
@@ -19,6 +20,8 @@ const api = {
     })).json();
   },
   async deleteNote(id)   { return await fetch(`/api/notes/${id}`, { method: "DELETE" }); },
+  async search(q)        { return (await fetch(`/api/search?q=${encodeURIComponent(q)}`)).json(); },
+  async calendar(y, m)   { return (await fetch(`/api/calendar/${y}/${m}`)).json(); },
 };
 
 const state = {
@@ -26,19 +29,26 @@ const state = {
   collections: [],
   activeView: "rapid",
   activeId: null,
+  activeMood: null,
   rapidFilterCollection: null, // null = show all
+  editorMode: "split",
+  calYear: new Date().getFullYear(),
+  calMonth: new Date().getMonth() + 1,
 };
 
 const $ = (s) => document.querySelector(s);
 
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
 function showView(name) {
   state.activeView = name;
-  for (const v of ["rapid", "collections", "timeline"]) {
+  for (const v of ["rapid","collections","timeline","calendar"]) {
     $("#" + v + "-pane").classList.toggle("hidden", v !== name);
   }
   for (const t of document.querySelectorAll(".tab")) {
     t.classList.toggle("active", t.dataset.view === name);
   }
+  if (name === "calendar") renderCalendar();
   render();
 }
 
@@ -55,12 +65,12 @@ function render() {
   renderRapid();
   renderTimeline();
   renderEditor();
+  renderPreview();
 }
 
 function renderCollections() {
   const ul = $("#collection-list");
   ul.innerHTML = "";
-  // "all" pseudo-collection clears filter
   const allLi = document.createElement("li");
   allLi.textContent = "all";
   allLi.onclick = () => { state.rapidFilterCollection = null; showView("rapid"); };
@@ -85,7 +95,9 @@ function renderRapid() {
   notes.sort((a, b) => (b.dates?.[0] || "").localeCompare(a.dates?.[0] || ""));
   for (const n of notes) {
     const li = document.createElement("li");
-    li.className = `sig-${n.signifier} status-${n.status}`;
+    let cls = `sig-${n.signifier} status-${n.status}`;
+    if (n.mood) cls += ` mood-${n.mood}`;
+    li.className = cls;
     li.textContent = n.title;
     li.onclick = () => openEditor(n.id);
     ul.appendChild(li);
@@ -98,7 +110,9 @@ function renderTimeline() {
   ul.innerHTML = "";
   for (const n of state.notes.filter((n) => (n.dates || []).includes(date))) {
     const li = document.createElement("li");
-    li.className = `sig-${n.signifier}`;
+    let cls = `sig-${n.signifier}`;
+    if (n.mood) cls += ` mood-${n.mood}`;
+    li.className = cls;
     li.textContent = n.title;
     li.onclick = () => openEditor(n.id);
     ul.appendChild(li);
@@ -129,6 +143,34 @@ function renderEditor() {
   sel.innerHTML = state.collections
     .map((c) => `<option ${c === n.collection ? "selected" : ""}>${c}</option>`)
     .join("");
+  // Mood picker
+  state.activeMood = n.mood || null;
+  document.querySelectorAll(".mood").forEach((b) => {
+    b.classList.toggle("active", (b.dataset.mood || "") === (state.activeMood || ""));
+  });
+  // Editor mode (split/write/preview)
+  setEditorMode(state.editorMode);
+}
+
+function renderPreview() {
+  if (!state.activeId) return;
+  const md = $("#note-body").value || "";
+  // marked is loaded as a global script (UMD)
+  const html = window.marked ? window.marked.parse(md) : escapeHtml(md);
+  $("#note-preview").innerHTML = html;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function setEditorMode(mode) {
+  state.editorMode = mode;
+  document.querySelector(".editor-body").dataset.mode = mode;
+  document.querySelectorAll(".editor-tab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.mode === mode)
+  );
+  renderPreview();
 }
 
 function openEditor(id) {
@@ -158,6 +200,7 @@ async function saveEditor() {
     status: $("#note-status").value,
     collection: $("#note-collection").value,
     dates,
+    mood: state.activeMood || null,
   });
   await refresh();
 }
@@ -174,8 +217,6 @@ async function createCollection(e) {
   e.preventDefault();
   const name = $("#new-collection-name").value.trim();
   if (!name) return;
-  // We need at least one note in the collection for it to be listable,
-  // so create a placeholder note, then move on.
   await api.createNote({
     id: "col-" + Date.now().toString(36),
     collection: name,
@@ -189,6 +230,90 @@ async function createCollection(e) {
   await refresh();
 }
 
+function pickMood(mood) {
+  // '' = clear
+  state.activeMood = mood || null;
+  document.querySelectorAll(".mood").forEach((b) => {
+    b.classList.toggle("active", (b.dataset.mood || "") === (state.activeMood || ""));
+  });
+}
+
+// --- Calendar ---
+async function renderCalendar() {
+  const cells = monthGrid(state.calYear, state.calMonth);
+  $("#cal-label").textContent = `${MONTHS[state.calMonth - 1]} ${state.calYear}`;
+  const counts = await api.calendar(state.calYear, state.calMonth);
+  const today = new Date().toISOString().slice(0, 10);
+  const grid = $("#calendar-grid");
+  grid.innerHTML = "";
+  for (const c of cells) {
+    const div = document.createElement("div");
+    let cls = "cal-cell";
+    if (!c.inMonth) cls += " out";
+    if (c.iso === today) cls += " today";
+    div.className = cls;
+    const day = document.createElement("span");
+    day.className = "day";
+    day.textContent = c.day;
+    div.appendChild(day);
+    const n = counts[c.iso];
+    if (n) {
+      const cnt = document.createElement("span");
+      cnt.className = "count";
+      cnt.textContent = n;
+      div.appendChild(cnt);
+    }
+    div.onclick = () => {
+      $("#timeline-date").value = c.iso;
+      showView("timeline");
+    };
+    grid.appendChild(div);
+  }
+}
+
+// --- Search ---
+let searchTimer = null;
+function onSearchInput() {
+  clearTimeout(searchTimer);
+  const q = $("#search-box").value.trim();
+  searchTimer = setTimeout(async () => {
+    if (!q) {
+      $("#search-results").classList.add("hidden");
+      return;
+    }
+    const hits = await api.search(q);
+    const box = $("#search-results");
+    box.innerHTML = "";
+    if (!hits.length) {
+      const div = document.createElement("div");
+      div.className = "hit-item";
+      div.textContent = "(no matches)";
+      box.appendChild(div);
+    } else {
+      for (const h of hits.slice(0, 20)) {
+        const div = document.createElement("div");
+        div.className = "hit-item";
+        const title = document.createElement("div");
+        title.className = "hit-title";
+        title.textContent = h.title;
+        const snip = document.createElement("div");
+        snip.className = "hit-snippet";
+        const body = (h.body || "").slice(0, 120);
+        snip.textContent = body || `(${h.collection}, ${h.dates?.[0] || "no date"})`;
+        div.appendChild(title);
+        div.appendChild(snip);
+        div.onclick = () => {
+          $("#search-results").classList.add("hidden");
+          $("#search-box").value = "";
+          openEditor(h.id);
+        };
+        box.appendChild(div);
+      }
+    }
+    box.classList.remove("hidden");
+  }, 200);
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => showView(t.dataset.view)));
   $("#rapid-form").onsubmit = submitRapid;
@@ -197,5 +322,36 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#note-delete").onclick = deleteEditor;
   $("#timeline-date").value = new Date().toISOString().slice(0, 10);
   $("#timeline-date").onchange = renderTimeline;
+  // mood buttons
+  document.querySelectorAll(".mood").forEach((b) =>
+    b.addEventListener("click", () => pickMood(b.dataset.mood))
+  );
+  // editor mode tabs
+  document.querySelectorAll(".editor-tab").forEach((t) =>
+    t.addEventListener("click", () => setEditorMode(t.dataset.mode))
+  );
+  // live preview update
+  $("#note-body").addEventListener("input", () => {
+    clearTimeout(window._pvTimer);
+    window._pvTimer = setTimeout(renderPreview, 150);
+  });
+  // calendar nav
+  $("#cal-prev").onclick = () => {
+    [state.calYear, state.calMonth] = shiftMonth(state.calYear, state.calMonth, -1);
+    renderCalendar();
+  };
+  $("#cal-next").onclick = () => {
+    [state.calYear, state.calMonth] = shiftMonth(state.calYear, state.calMonth, 1);
+    renderCalendar();
+  };
+  // search
+  $("#search-box").addEventListener("input", onSearchInput);
+  $("#search-box").addEventListener("blur", () =>
+    setTimeout(() => $("#search-results").classList.add("hidden"), 150)
+  );
+  $("#search-box").addEventListener("focus", () => {
+    if ($("#search-box").value.trim()) $("#search-results").classList.remove("hidden");
+  });
+
   await refresh();
 });

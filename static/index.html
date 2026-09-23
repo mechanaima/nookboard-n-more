@@ -13,7 +13,12 @@
       <button data-view="rapid" class="tab active">Rapid Log</button>
       <button data-view="collections" class="tab">Collections</button>
       <button data-view="timeline" class="tab">Timeline</button>
+      <button data-view="calendar" class="tab">Calendar</button>
     </nav>
+    <div class="search-wrap">
+      <input id="search-box" type="search" placeholder="search…" autocomplete="off">
+      <div id="search-results" class="search-results hidden"></div>
+    </div>
   </header>
 
   <main class="layout">
@@ -42,35 +47,73 @@
         <input type="date" id="timeline-date">
         <ul id="timeline-list"></ul>
       </section>
+
+      <section id="calendar-pane" class="pane hidden">
+        <h2>Calendar</h2>
+        <div class="cal-nav">
+          <button id="cal-prev">‹</button>
+          <span id="cal-label"></span>
+          <button id="cal-next">›</button>
+        </div>
+        <div class="cal-weekdays">
+          <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span>
+          <span>Thu</span><span>Fri</span><span>Sat</span>
+        </div>
+        <div id="calendar-grid" class="cal-grid"></div>
+      </section>
     </aside>
 
     <section class="editor">
       <div id="empty-state" class="empty">Pick a note, or rapid-log a new one.</div>
       <article id="note-editor" class="hidden">
         <input id="note-title" placeholder="title">
-        <select id="note-collection"></select>
-        <select id="note-signifier">
-          <option value="note">– note</option>
-          <option value="task">• task</option>
-          <option value="event">○ event</option>
-        </select>
-        <select id="note-status">
-          <option value="open">open</option>
-          <option value="complete">complete X</option>
-          <option value="migrated">migrated &gt;</option>
-          <option value="scheduled">scheduled &lt;</option>
-          <option value="irrelevant">irrelevant</option>
-        </select>
-        <label>dates <input id="note-dates" placeholder="2026-09-23, 2026-09-30"></label>
-        <textarea id="note-body" placeholder="body (Markdown)"></textarea>
+        <div class="editor-row">
+          <select id="note-collection"></select>
+          <select id="note-signifier">
+            <option value="note">– note</option>
+            <option value="task">• task</option>
+            <option value="event">○ event</option>
+          </select>
+          <select id="note-status">
+            <option value="open">open</option>
+            <option value="complete">complete X</option>
+            <option value="migrated">migrated &gt;</option>
+            <option value="scheduled">scheduled &lt;</option>
+            <option value="irrelevant">irrelevant</option>
+          </select>
+        </div>
+        <label class="dates-label">dates <input id="note-dates" placeholder="2026-09-23, 2026-09-30"></label>
+
+        <div class="mood-row">
+          <span class="mood-label">mood</span>
+          <button type="button" class="mood" data-mood="great" title="great">😄</button>
+          <button type="button" class="mood" data-mood="good"  title="good">🙂</button>
+          <button type="button" class="mood" data-mood="meh"   title="meh">😐</button>
+          <button type="button" class="mood" data-mood="low"   title="low">😕</button>
+          <button type="button" class="mood" data-mood="bad"   title="bad">😢</button>
+          <button type="button" class="mood" data-mood=""      title="clear">·</button>
+        </div>
+
+        <div class="editor-tabs">
+          <button class="editor-tab active" data-mode="split">Split</button>
+          <button class="editor-tab" data-mode="write">Write</button>
+          <button class="editor-tab" data-mode="preview">Preview</button>
+        </div>
+
+        <div class="editor-body" data-mode="split">
+          <textarea id="note-body" placeholder="body (Markdown)"></textarea>
+          <div id="note-preview" class="md-preview"></div>
+        </div>
+
         <div class="actions">
-          <button id="note-save">Save</button>
+          <button id="note-save" class="primary">Save</button>
           <button id="note-delete" class="danger">Delete</button>
         </div>
       </article>
     </section>
   </main>
 
+  <script src="/static/vendor/marked.min.js"></script>
   <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>
