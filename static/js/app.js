@@ -152,6 +152,7 @@ function renderEditor() {
   $("#note-status").value = n.status;
   $("#note-dates").value = (n.dates || []).join(", ");
   $("#note-tags").value = (n.tags || []).join(", ");
+  $("#note-recurrence").value = n.recurrence || "";
   const sel = $("#note-collection");
   sel.innerHTML = state.collections
     .map((c) => `<option ${c === n.collection ? "selected" : ""}>${c}</option>`)
@@ -268,6 +269,7 @@ async function saveEditor() {
     dates,
     tags,
     mood: state.activeMood || null,
+    recurrence: $("#note-recurrence").value || null,
   });
   await refresh();
 }

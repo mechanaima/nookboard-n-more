@@ -26,6 +26,7 @@ class NoteIn(BaseModel):
     parent_id: Optional[str] = None
     mood: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
+    recurrence: Optional[str] = None
 
 
 def create_app(vault_root: Path | None = None) -> FastAPI:
@@ -36,6 +37,9 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
     # First-boot rebuild: if DB is empty but vault has files, rebuild index.
     if not db.all_ids() and any(root.rglob("*.md")):
         db.rebuild_from(vault.list_all())
+
+    # Materialize any due recurring notes at startup.
+    db.run_recurring(date.today())
 
     app = FastAPI(title="nookboard")
 
@@ -79,6 +83,7 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
             parent_id=payload.parent_id,
             mood=payload.mood,
             tags=payload.tags,
+            recurrence=payload.recurrence,
             created=date.today(),
         )
         vault.write(note)
@@ -104,6 +109,7 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
             parent_id=payload.get("parent_id", existing.parent_id),
             mood=payload.get("mood", existing.mood),
             tags=payload.get("tags", existing.tags),
+            recurrence=payload.get("recurrence", existing.recurrence),
             created=existing.created,
         )
         vault.write(updated)

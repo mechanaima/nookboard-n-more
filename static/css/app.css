@@ -90,6 +90,8 @@ button:hover { background: var(--surface2); }
 #note-dates { width: 100%; }
 .tags-label { display: block; }
 #note-tags { width: 100%; }
+.recur-label { display: block; }
+#note-recurrence { width: 100%; }
 
 .tags-chips { display: inline-flex; gap: 2px; margin-left: 6px; flex-wrap: wrap; }
 .tag-chip { background: var(--surface2); color: var(--muted);
