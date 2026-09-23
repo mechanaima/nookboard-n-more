@@ -39,20 +39,13 @@ class Database:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.path))
+        self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
     def upsert(self, n: Note, mood: str | None = None) -> None:
         search_text = f"{n.title}\n{n.body}".lower()
-        # If mood is None, preserve existing mood (don't clobber on
-        # subsequent writes that don't touch mood).
-        existing_mood = None
-        if mood is None:
-            row = self.conn.execute("SELECT mood FROM notes WHERE id = ?", (n.id,)).fetchone()
-            if row:
-                existing_mood = row["mood"]
         self.conn.execute(
             """
             INSERT INTO notes (id, collection, title, body, signifier, status,
@@ -75,7 +68,7 @@ class Database:
                 n.signifier.value, n.status.value,
                 ",".join(d.isoformat() for d in n.dates),
                 n.parent_id, n.created.isoformat(),
-                mood if mood is not None else existing_mood, search_text,
+                mood, search_text,
             ),
         )
         self.conn.commit()

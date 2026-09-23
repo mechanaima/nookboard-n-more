@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from .models import Note, Signifier, Status
 from .vault import Vault
+from .db import Database
 
 
 class NoteIn(BaseModel):
@@ -23,11 +24,17 @@ class NoteIn(BaseModel):
     status: Status = Status.OPEN
     dates: list[date] = Field(default_factory=list)
     parent_id: Optional[str] = None
+    mood: Optional[str] = None
 
 
 def create_app(vault_root: Path | None = None) -> FastAPI:
     root = Path(vault_root) if vault_root else Path(__file__).resolve().parent.parent / "vault"
-    vault = Vault(root)
+    db = Database(root / ".index.sqlite")
+    vault = Vault(root, db=db)
+
+    # First-boot rebuild: if DB is empty but vault has files, rebuild index.
+    if not db.all_ids() and any(root.rglob("*.md")):
+        db.rebuild_from(vault.list_all())
 
     app = FastAPI(title="nookboard")
 
@@ -66,6 +73,7 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
             status=payload.status,
             dates=payload.dates,
             parent_id=payload.parent_id,
+            mood=payload.mood,
             created=date.today(),
         )
         vault.write(note)
@@ -77,7 +85,6 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
             existing = vault.read(note_id)
         except KeyError:
             raise HTTPException(404, "note not found")
-        # Note is frozen — build a new instance with overrides applied.
         new_dates = existing.dates
         if "dates" in payload:
             new_dates = [date.fromisoformat(d) for d in payload["dates"]]
@@ -90,6 +97,7 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
             status=Status(payload.get("status", existing.status.value)),
             dates=new_dates,
             parent_id=payload.get("parent_id", existing.parent_id),
+            mood=payload.get("mood", existing.mood),
             created=existing.created,
         )
         vault.write(updated)
@@ -97,12 +105,22 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
 
     @app.delete("/api/notes/{note_id}", status_code=204)
     def delete_note(note_id: str):
-        try:
-            n = vault.read(note_id)
-        except KeyError:
-            raise HTTPException(404, "note not found")
-        (vault.root / n.collection / f"{n.id}.md").unlink(missing_ok=True)
+        vault.delete(note_id)
         return None
+
+    @app.get("/api/search")
+    def search(q: str = ""):
+        return [n.to_dict() for n in db.search(q)]
+
+    @app.get("/api/calendar/{year}/{month}")
+    def calendar(year: int, month: int):
+        return db.month_counts(year, month)
+
+    @app.post("/api/rebuild-index", status_code=200)
+    def rebuild_index():
+        notes = vault.list_all()
+        db.rebuild_from(notes)
+        return {"rebuilt": len(notes)}
 
     # Static front-end
     static_dir = Path(__file__).resolve().parent.parent / "static"
