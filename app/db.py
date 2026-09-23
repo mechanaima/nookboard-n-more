@@ -1,20 +1,25 @@
 """SQLite index for nookboard notes.
 
 Markdown remains the source of truth. This module maintains a denormalized
-index that powers search, calendar aggregation, and mood breakdown.
+index that powers search, calendar aggregation, mood breakdown, tags,
+backlinks, and the recurring-note scheduler.
 
 The schema lives in SCHEMA below; rebuilding from .md files is done by
 app.main on first boot if the DB file is missing or empty.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from datetime import date
+from datetime import date, timedelta
 from typing import Iterable
 
 import sqlite3
 
 from .models import Note, Signifier, Status
+
+
+WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
 
 SCHEMA = """
@@ -30,6 +35,7 @@ CREATE TABLE IF NOT EXISTS notes (
     created     TEXT NOT NULL,
     mood        TEXT,
     tags_csv    TEXT NOT NULL DEFAULT '',
+    recurrence  TEXT,
     search_text TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notes_collection ON notes(collection);
@@ -43,6 +49,10 @@ CREATE TABLE IF NOT EXISTS recurrence_state (
     last_run TEXT NOT NULL
 );
 """
+
+
+def _extract_wikilink_titles(body: str) -> list[str]:
+    return [m.strip() for m in WIKILINK_RE.findall(body)]
 
 
 class Database:
@@ -61,8 +71,8 @@ class Database:
             """
             INSERT INTO notes (id, collection, title, body, signifier, status,
                                dates_csv, parent_id, created, mood, tags_csv,
-                               search_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               recurrence, search_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 collection=excluded.collection,
                 title=excluded.title,
@@ -74,6 +84,7 @@ class Database:
                 created=excluded.created,
                 mood=COALESCE(excluded.mood, notes.mood),
                 tags_csv=excluded.tags_csv,
+                recurrence=excluded.recurrence,
                 search_text=excluded.search_text
             """,
             (
@@ -81,8 +92,21 @@ class Database:
                 n.signifier.value, n.status.value,
                 ",".join(d.isoformat() for d in n.dates),
                 n.parent_id, n.created.isoformat(),
-                mood, tags_csv, search_text,
+                mood, tags_csv, n.recurrence, search_text,
             ),
+        )
+        # Update backlink index: drop old, re-insert from current body.
+        self.conn.execute("DELETE FROM note_links WHERE source_id = ?", (n.id,))
+        targets = _extract_wikilink_titles(n.body)
+        if targets:
+            self.conn.executemany(
+                "INSERT INTO note_links (source_id, target_title) VALUES (?, ?)",
+                [(n.id, t) for t in targets],
+            )
+        # Ensure a recurrence_state row exists.
+        self.conn.execute(
+            "INSERT OR IGNORE INTO recurrence_state (note_id, last_run) VALUES (?, ?)",
+            (n.id, n.created.isoformat()),
         )
         self.conn.commit()
 
@@ -95,6 +119,8 @@ class Database:
 
     def delete(self, note_id: str) -> None:
         self.conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        self.conn.execute("DELETE FROM note_links WHERE source_id = ?", (note_id,))
+        self.conn.execute("DELETE FROM recurrence_state WHERE note_id = ?", (note_id,))
         self.conn.commit()
 
     def get(self, note_id: str) -> Note | None:
@@ -134,6 +160,58 @@ class Database:
         ).fetchall()
         return [self._row_to_note(r) for r in rows]
 
+    def backlinks_for_title(self, title: str) -> list[Note]:
+        rows = self.conn.execute(
+            "SELECT n.* FROM notes n JOIN note_links l ON l.source_id = n.id "
+            "WHERE l.target_title = ? ORDER BY n.created DESC",
+            (title,),
+        ).fetchall()
+        return [self._row_to_note(r) for r in rows]
+
+    def run_recurring(self, today: date) -> list[Note]:
+        """For each note with recurrence, instantiate due dates up to `today`."""
+        created: list[Note] = []
+        rows = self.conn.execute(
+            "SELECT n.*, COALESCE(s.last_run, n.created) AS last_run "
+            "FROM notes n LEFT JOIN recurrence_state s ON s.note_id = n.id "
+            "WHERE n.recurrence IS NOT NULL AND n.recurrence != ''"
+        ).fetchall()
+        for row in rows:
+            real = self._row_to_note(row)
+            last_run = date.fromisoformat(row["last_run"])
+            if not real.recurrence:
+                continue
+            while True:
+                nxt = _next_instance(last_run, real.recurrence)
+                if not nxt or nxt > today:
+                    break
+                new_id = f"{real.id}-{nxt.isoformat()}"
+                if self.get(new_id) is not None:
+                    last_run = nxt
+                    continue
+                instance = Note(
+                    id=new_id,
+                    collection=real.collection,
+                    title=f"{real.title} ({nxt.isoformat()})",
+                    body=real.body,
+                    signifier=real.signifier,
+                    status=Status.OPEN,
+                    dates=[nxt],
+                    parent_id=real.id,
+                    created=nxt,
+                    mood=None,
+                    tags=[],
+                )
+                self.upsert(instance)
+                self.conn.execute(
+                    "UPDATE recurrence_state SET last_run = ? WHERE note_id = ?",
+                    (nxt.isoformat(), real.id),
+                )
+                self.conn.commit()
+                created.append(instance)
+                last_run = nxt
+        return created
+
     def rebuild_from(self, notes: Iterable[Note]) -> None:
         self.conn.executescript("DELETE FROM notes; DELETE FROM note_links; DELETE FROM recurrence_state;")
         for n in notes:
@@ -157,4 +235,19 @@ class Database:
             created=date.fromisoformat(row["created"]),
             mood=row["mood"],
             tags=tags,
+            recurrence=row["recurrence"],
         )
+
+
+def _next_instance(last: date, kind: str) -> date | None:
+    if kind == "daily":
+        return last + timedelta(days=1)
+    if kind == "weekly":
+        return last + timedelta(days=7)
+    if kind == "monthly":
+        from calendar import monthrange
+        year = last.year + (1 if last.month == 12 else 0)
+        month = 1 if last.month == 12 else last.month + 1
+        day = min(last.day, monthrange(year, month)[1])
+        return date(year, month, day)
+    return None

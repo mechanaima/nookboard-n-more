@@ -122,6 +122,19 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
     def calendar(year: int, month: int):
         return db.month_counts(year, month)
 
+    @app.get("/api/notes/{note_id}/backlinks")
+    def get_backlinks(note_id: str):
+        try:
+            n = vault.read(note_id)
+        except KeyError:
+            raise HTTPException(404, "note not found")
+        return [b.to_dict() for b in db.backlinks_for_title(n.title)]
+
+    @app.post("/api/recurring/run")
+    def trigger_recurring():
+        today = date.today()
+        return {"created": [n.to_dict() for n in db.run_recurring(today)]}
+
     @app.post("/api/rebuild-index", status_code=200)
     def rebuild_index():
         notes = vault.list_all()

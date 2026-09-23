@@ -136,6 +136,13 @@ button:hover { background: var(--surface2); }
 .wikilink.exists { text-decoration: underline dotted; }
 .wikilink.missing { color: var(--red); }
 
+.backlinks { border-top: 1px solid var(--border); padding-top: 8px; }
+.backlinks h3 { font-size: 11px; text-transform: uppercase;
+  color: var(--muted); margin: 4px 0; }
+.backlinks ul { list-style: none; padding: 0; }
+.backlinks li { padding: 4px 8px; border-radius: 4px; cursor: pointer; }
+.backlinks li:hover { background: var(--surface2); }
+
 .actions { display: flex; gap: 8px; margin-top: 4px; }
 .primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .primary:hover { background: var(--accent2); border-color: var(--accent2); }

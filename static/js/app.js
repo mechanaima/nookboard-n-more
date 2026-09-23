@@ -188,9 +188,56 @@ function setEditorMode(mode) {
   renderPreview();
 }
 
-function openEditor(id) {
+async function openEditor(id) {
   state.activeId = id;
-  renderEditor();
+  await renderEditor();
+  await renderBacklinks();
+}
+
+async function renderBacklinks() {
+  const panel = $("#backlinks-panel");
+  const list = $("#backlinks-list");
+  if (!state.activeId) {
+    panel.classList.add("hidden");
+    return;
+  }
+  const r = await fetch(`/api/notes/${encodeURIComponent(state.activeId)}/backlinks`);
+  if (!r.ok) {
+    panel.classList.add("hidden");
+    return;
+  }
+  const hits = await r.json();
+  list.innerHTML = "";
+  if (!hits.length) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+  for (const h of hits) {
+    const li = document.createElement("li");
+    let cls = `sig-${h.signifier}`;
+    if (h.mood) cls += ` mood-${h.mood}`;
+    li.className = cls;
+    li.textContent = h.title;
+    li.onclick = () => openEditor(h.id);
+    list.appendChild(li);
+  }
+}
+
+async function createFromWikilink(title) {
+  const id = "wikilink-" + Date.now().toString(36);
+  await api.createNote({
+    id,
+    collection: "inbox",
+    title,
+    body: "",
+    signifier: "note",
+    status: "open",
+    dates: [new Date().toISOString().slice(0, 10)],
+  });
+  await refresh();
+  const n = state.notes.find((x) => x.title === title);
+  if (n) openEditor(n.id);
 }
 
 async function submitRapid(e) {
@@ -371,6 +418,19 @@ window.addEventListener("DOMContentLoaded", async () => {
   );
   $("#search-box").addEventListener("focus", () => {
     if ($("#search-box").value.trim()) $("#search-results").classList.remove("hidden");
+  });
+  // wikilink clicks in preview
+  $("#note-preview").addEventListener("click", async (e) => {
+    const a = e.target.closest("a.wikilink");
+    if (!a) return;
+    e.preventDefault();
+    const title = a.dataset.title;
+    const n = state.notes.find((x) => x.title === title);
+    if (n) {
+      openEditor(n.id);
+    } else if (confirm(`No note titled "${title}". Create it?`)) {
+      await createFromWikilink(title);
+    }
   });
 
   await refresh();

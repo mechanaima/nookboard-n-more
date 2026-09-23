@@ -48,6 +48,7 @@ class Note:
     created: date = field(default_factory=date.today)
     mood: Optional[str] = None
     tags: list[str] = field(default_factory=list)
+    recurrence: Optional[str] = None  # "daily" | "weekly" | "monthly"
 
     def to_markdown(self) -> str:
         post = frontmatter.Post(self.body)
@@ -62,6 +63,7 @@ class Note:
             "created": self.created.isoformat(),
             "mood": self.mood,
             "tags": list(self.tags),
+            "recurrence": self.recurrence,
         }
         return frontmatter.dumps(post)
 
@@ -81,6 +83,7 @@ class Note:
             created=date.fromisoformat(meta["created"]) if "created" in meta else date.today(),
             mood=meta.get("mood"),
             tags=list(meta.get("tags", []) or []),
+            recurrence=meta.get("recurrence"),
         )
 
     def to_dict(self) -> dict:
