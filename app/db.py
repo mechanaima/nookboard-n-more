@@ -169,7 +169,11 @@ class Database:
         return [self._row_to_note(r) for r in rows]
 
     def run_recurring(self, today: date) -> list[Note]:
-        """For each note with recurrence, instantiate due dates up to `today`."""
+        """For each note with recurrence, instantiate due dates up to `today`.
+
+        Returns the list of newly-created Note instances. The caller
+        is responsible for writing them to the vault (file system).
+        """
         created: list[Note] = []
         rows = self.conn.execute(
             "SELECT n.*, COALESCE(s.last_run, n.created) AS last_run "
@@ -202,7 +206,7 @@ class Database:
                     mood=None,
                     tags=[],
                 )
-                self.upsert(instance)
+                # Caller writes the file; we just bump state and return the note.
                 self.conn.execute(
                     "UPDATE recurrence_state SET last_run = ? WHERE note_id = ?",
                     (nxt.isoformat(), real.id),

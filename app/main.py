@@ -42,7 +42,8 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
         db.rebuild_from(vault.list_all())
 
     # Materialize any due recurring notes at startup.
-    db.run_recurring(date.today())
+    for n in db.run_recurring(date.today()):
+        vault.write(n)
 
     app = FastAPI(title="nookboard")
 
@@ -142,7 +143,11 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
     @app.post("/api/recurring/run")
     def trigger_recurring():
         today = date.today()
-        return {"created": [n.to_dict() for n in db.run_recurring(today)]}
+        created = db.run_recurring(today)
+        # Write the new instances to the vault (file system).
+        for n in created:
+            vault.write(n)
+        return {"created": [n.to_dict() for n in created]}
 
     @app.get("/api/export.zip")
     def export_zip():

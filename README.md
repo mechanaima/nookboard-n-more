@@ -47,7 +47,7 @@ Type into the rapid-log box:
 Status is updated in the editor pane: `open`, `complete`, `migrated`,
 `scheduled`, `irrelevant`.
 
-## Features (v2)
+## Features (v3)
 
 - **Rapid Log** — type `• task`, `○ event`, `– note` and hit Enter
 - **Collections** — NeatNook-style curation, create + filter
@@ -57,18 +57,28 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
 - **Markdown preview** — split / write / preview tabs, live render
 - **Mood tags** — emoji picker on every note
 - **Migration** — task states: open → complete / migrated / scheduled / irrelevant
+- **Tags** — multi-select, filter by tag (`?tag=foo`), chips in rapid-list
+- **Wikilinks** — `[[Title]]` syntax, click-through in preview, missing/resolved styling
+- **Backlinks** — every note shows a panel of notes that link to it
+- **Recurring notes** — daily/weekly/monthly cadence, instances auto-created on startup
+- **Vault export** — `GET /api/export.zip` — single zip of all `.md` files
+- **ICS subscription** — `GET /api/calendar.ics` — external calendar apps subscribe
 
 ## API
 
 - `GET    /api/health`
 - `GET    /api/collections`
-- `GET    /api/notes?collection=&date=`
+- `GET    /api/notes?collection=&date=&tag=`
 - `GET    /api/notes/{id}`
+- `GET    /api/notes/{id}/backlinks`
 - `POST   /api/notes`
 - `PATCH  /api/notes/{id}`
 - `DELETE /api/notes/{id}`
 - `GET    /api/search?q=`
 - `GET    /api/calendar/{year}/{month}` → `{"YYYY-MM-DD": count, ...}`
+- `POST   /api/recurring/run` → instantiate due recurring notes now
+- `GET    /api/export.zip` → download the vault as a zip
+- `GET    /api/calendar.ics` → RFC 5545 feed for calendar subscription
 - `POST   /api/rebuild-index` (rebuild DB from .md files)
 
 ## Where data lives
