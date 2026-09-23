@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>nookboard</title>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>nookboard</h1>
+    <nav class="tabs">
+      <button data-view="rapid" class="tab active">Rapid Log</button>
+      <button data-view="collections" class="tab">Collections</button>
+      <button data-view="timeline" class="tab">Timeline</button>
+    </nav>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <section id="collections-pane" class="pane hidden">
+        <h2>Collections</h2>
+        <ul id="collection-list"></ul>
+        <form id="new-collection-form">
+          <input id="new-collection-name" placeholder="new collection" required>
+          <button type="submit">+</button>
+        </form>
+      </section>
+
+      <section id="rapid-pane" class="pane">
+        <h2>Rapid Log</h2>
+        <p class="hint">• task &nbsp; ○ event &nbsp; – note</p>
+        <form id="rapid-form">
+          <input id="rapid-input" placeholder="Type • buy milk and press Enter" autofocus>
+          <button type="submit">Add</button>
+        </form>
+        <ul id="rapid-list"></ul>
+      </section>
+
+      <section id="timeline-pane" class="pane hidden">
+        <h2>Timeline</h2>
+        <input type="date" id="timeline-date">
+        <ul id="timeline-list"></ul>
+      </section>
+    </aside>
+
+    <section class="editor">
+      <div id="empty-state" class="empty">Pick a note, or rapid-log a new one.</div>
+      <article id="note-editor" class="hidden">
+        <input id="note-title" placeholder="title">
+        <select id="note-collection"></select>
+        <select id="note-signifier">
+          <option value="note">– note</option>
+          <option value="task">• task</option>
+          <option value="event">○ event</option>
+        </select>
+        <select id="note-status">
+          <option value="open">open</option>
+          <option value="complete">complete X</option>
+          <option value="migrated">migrated &gt;</option>
+          <option value="scheduled">scheduled &lt;</option>
+          <option value="irrelevant">irrelevant</option>
+        </select>
+        <label>dates <input id="note-dates" placeholder="2026-09-23, 2026-09-30"></label>
+        <textarea id="note-body" placeholder="body (Markdown)"></textarea>
+        <div class="actions">
+          <button id="note-save">Save</button>
+          <button id="note-delete" class="danger">Delete</button>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

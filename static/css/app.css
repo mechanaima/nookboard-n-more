@@ -1,0 +1,68 @@
+/* nookboard — Catppuccin Mocha, hand-rolled */
+:root {
+  --bg: #1e1e2e;
+  --surface: #181825;
+  --surface2: #313244;
+  --border: #45475a;
+  --fg: #cdd6f4;
+  --muted: #a6adc8;
+  --accent: #f5c2e7;
+  --accent2: #89b4fa;
+  --green: #a6e3a1;
+  --red: #f38ba8;
+  --yellow: #f9e2af;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+  font: 14px/1.5 system-ui, sans-serif;
+}
+button, input, select, textarea {
+  font: inherit; color: var(--fg);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+  padding: 4px 8px;
+}
+button { cursor: pointer; }
+button:hover { background: var(--surface2); }
+
+.topbar {
+  display: flex; align-items: center; gap: 16px; padding: 8px 12px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.topbar h1 { margin: 0; font-size: 16px; color: var(--accent); }
+.tabs { display: flex; gap: 4px; }
+.tab { background: transparent; border: 1px solid transparent; }
+.tab.active { background: var(--surface2); border-color: var(--border); }
+
+.layout { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 41px); }
+.sidebar {
+  border-right: 1px solid var(--border); padding: 8px; overflow-y: auto;
+  background: var(--surface);
+}
+.pane.hidden { display: none; }
+.pane h2 {
+  margin: 4px 0 8px; font-size: 12px; text-transform: uppercase;
+  color: var(--muted); letter-spacing: .1em;
+}
+.hint { color: var(--muted); font-size: 12px; }
+
+#rapid-list, #collection-list, #timeline-list { list-style: none; padding: 0; margin: 8px 0; }
+#rapid-list li, #collection-list li, #timeline-list li {
+  padding: 4px 8px; border-radius: 4px; cursor: pointer;
+}
+#rapid-list li:hover, #collection-list li:hover, #timeline-list li:hover {
+  background: var(--surface2);
+}
+.sig-task::before  { content: "• "; color: var(--yellow); }
+.sig-event::before { content: "○ "; color: var(--accent2); }
+.sig-note::before  { content: "– "; color: var(--muted); }
+.status-complete   { text-decoration: line-through; opacity: .6; }
+.status-irrelevant { text-decoration: line-through; opacity: .4; }
+
+.editor { padding: 12px; overflow-y: auto; }
+.editor .hidden { display: none; }
+#note-editor { display: grid; gap: 8px; }
+#note-editor textarea { min-height: 240px; font-family: ui-monospace, monospace; }
+.actions { display: flex; gap: 8px; }
+.danger { background: var(--red); color: var(--bg); border-color: var(--red); }
+.empty { color: var(--muted); }
