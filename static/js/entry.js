@@ -34,6 +34,15 @@ export function escapeHtml(s) {
     .replace(/'/g, "&#39;");
 }
 
+// Format a Date as YYYY-MM-DD using LOCAL calendar fields.
+// NEVER use toISOString() for this: it converts to UTC first, so a local
+// midnight lands on the previous day in any timezone east of Greenwich,
+// and "now" lands on tomorrow for western timezones late in the day.
+export function localIsoDate(d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 // Wrap query matches in <mark>, escaping everything else exactly once.
 export function highlight(text, query) {
   const src = String(text ?? "");

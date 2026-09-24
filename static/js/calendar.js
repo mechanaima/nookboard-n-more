@@ -1,4 +1,6 @@
 // Pure helpers — testable without DOM.
+import { localIsoDate } from "./entry.js";
+
 export function monthGrid(year, month /* 1-12 */) {
   // Return 42 cells (6 weeks × 7 days) starting Sunday.
   const first = new Date(year, month - 1, 1);
@@ -9,7 +11,8 @@ export function monthGrid(year, month /* 1-12 */) {
     const d = new Date(start);
     d.setDate(start.getDate() + i);
     cells.push({
-      iso: d.toISOString().slice(0, 10),
+      // localIsoDate, not toISOString — see the note on that helper
+      iso: localIsoDate(d),
       day: d.getDate(),
       inMonth: d.getMonth() === month - 1,
     });

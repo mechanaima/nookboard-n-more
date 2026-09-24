@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   signifierGlyph, moodEmoji, statusLabel,
-  escapeHtml, highlight, heatLevel, shortDate, friendlyDate,
+  escapeHtml, highlight, heatLevel, shortDate, friendlyDate, localIsoDate,
 } from "./entry.js";
 
 test("signifier glyphs", () => {
@@ -71,4 +71,17 @@ test("shortDate formats", () => {
 test("friendlyDate says today", () => {
   assert.equal(friendlyDate("2026-09-23", "2026-09-23"), "today");
   assert.equal(friendlyDate("2026-09-22", "2026-09-23"), "Sep 22");
+});
+
+test("localIsoDate uses local fields, not UTC", () => {
+  // Local midnight: toISOString() would render this as the previous day in
+  // any timezone east of Greenwich.
+  assert.equal(localIsoDate(new Date(2024, 2, 5, 0, 0, 0)), "2024-03-05");
+  // Local 23:30: toISOString() would render this as the next day west of GMT.
+  assert.equal(localIsoDate(new Date(2024, 2, 5, 23, 30, 0)), "2024-03-05");
+});
+
+test("localIsoDate zero-pads month and day", () => {
+  assert.equal(localIsoDate(new Date(2024, 0, 9)), "2024-01-09");
+  assert.equal(localIsoDate(new Date(2024, 11, 31)), "2024-12-31");
 });

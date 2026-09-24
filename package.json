@@ -2,5 +2,8 @@
   "name": "nookboard",
   "private": true,
   "type": "module",
-  "scripts": { "test": "node --test static/js/*.test.js" }
+  "scripts": {
+    "test": "node --test static/js/*.test.js",
+    "test:tz": "TZ=UTC npm test && TZ=Pacific/Kiritimati npm test && TZ=Pacific/Midway npm test && TZ=America/New_York npm test"
+  }
 }

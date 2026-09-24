@@ -46,3 +46,27 @@ test("shiftMonth backward", () => {
   assert.deepEqual(shiftMonth(2026, 1, -1), [2025, 12]);
   assert.deepEqual(shiftMonth(2026, 9, -1), [2026, 8]);
 });
+
+// Regression: monthGrid used to derive `iso` via toISOString(), which shifts
+// the day in positive-UTC-offset timezones. Run the suite under TZ=Pacific/Kiritimati
+// (see npm run test:tz) for this to bite.
+test("cell iso always agrees with its local day number", () => {
+  for (const [y, m] of [[2024, 1], [2024, 2], [2024, 7], [2026, 9], [2026, 12]]) {
+    for (const c of monthGrid(y, m)) {
+      assert.equal(
+        Number(c.iso.slice(8, 10)), c.day,
+        `${c.iso} disagrees with local day ${c.day}`,
+      );
+    }
+  }
+});
+
+test("cell iso is a valid local date that round-trips", () => {
+  for (const c of monthGrid(2026, 9)) {
+    const [y, m, d] = c.iso.split("-").map(Number);
+    const probe = new Date(y, m - 1, d);
+    assert.equal(probe.getFullYear(), y);
+    assert.equal(probe.getMonth(), m - 1);
+    assert.equal(probe.getDate(), d);
+  }
+});

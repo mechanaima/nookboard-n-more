@@ -4,7 +4,7 @@ import { monthGrid, shiftMonth } from "./calendar.js";
 import { extractWikilinks, renderWikilinks } from "./wikilink.js";
 import {
   signifierGlyph, moodEmoji, statusLabel, escapeHtml,
-  highlight, heatLevel, friendlyDate,
+  highlight, heatLevel, friendlyDate, localIsoDate,
 } from "./entry.js";
 
 const api = {
@@ -50,7 +50,11 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const todayIso = () => new Date().toISOString().slice(0, 10);
+
+// Local calendar date, NOT toISOString() — that would report tomorrow for
+// western timezones late in the day, which silently misdates new notes and
+// puts the calendar's "today" ring on the wrong cell.
+const todayIso = () => localIsoDate(new Date());
 
 /* ---------------------------------------------------------------- views -- */
 
