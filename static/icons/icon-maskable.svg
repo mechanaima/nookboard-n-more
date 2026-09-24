@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- The maskable variant: full bleed and square, because the launcher crops
+       this one into its own shape and rounded corners of our own would fight
+       it. The mark sits well inside the safe zone (a circle 80% across). -->
+  <rect x="0" y="0" width="512" height="512" fill="#1e1e2e"/>
+  <circle cx="256" cy="256" r="100" fill="none" stroke="#f5c2e7" stroke-width="44"/>
+  <circle cx="256" cy="256" r="36" fill="#89b4fa"/>
+</svg>

@@ -44,6 +44,32 @@ import {
 // refused move (a dependency cycle) can be shown instead of swallowed.
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
+/** `fetch`, except that never reaching the server is a sentence.
+ *
+ * Every call below goes through this and then `jsonOrThrow`, but `jsonOrThrow`
+ * can only explain a response it was handed. A request that never arrives --
+ * the server stopped, or the machine offline, which is now a state the app can
+ * be *opened* in, because it installs -- rejected with
+ * `TypeError: Failed to fetch`: an error about nothing, in an app whose whole
+ * manner is to say what happened.
+ */
+async function send(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch {
+    // `navigator.onLine` is a hint, not a fact -- it reports the last thing the
+    // browser heard, and a machine that has just come back up reports itself
+    // online while nothing answers. So it chooses the wording when it knows, and
+    // when it does not, the sentence below is true either way. Neither line
+    // quotes the platform's `Failed to fetch`, which is an error about nothing.
+    throw new Error(
+      navigator.onLine === false
+        ? "this machine is offline, so nookboard's server cannot be reached"
+        : "could not reach nookboard's server — is it running?"
+    );
+  }
+}
+
 async function jsonOrThrow(resp) {
   // Read the body as text first. `resp.json()` on a body that is not JSON
   // throws "Unexpected token 'I', "Internal Server Error" is not valid JSON" —
@@ -77,60 +103,60 @@ const api = {
   // `updateNote` and then `listNotes`, so a server that answers with anything
   // but JSON has to produce a sentence about the *server*, not about a
   // character it did not expect.
-  async listNotes()      { return jsonOrThrow(await fetch("/api/notes")); },
-  async listCollections(){ return jsonOrThrow(await fetch("/api/collections")); },
+  async listNotes()      { return jsonOrThrow(await send("/api/notes")); },
+  async listCollections(){ return jsonOrThrow(await send("/api/collections")); },
   async createNote(n)    {
-    return jsonOrThrow(await fetch("/api/notes", {
+    return jsonOrThrow(await send("/api/notes", {
       method: "POST",
       headers: JSON_HEADERS,
       body: JSON.stringify(n),
     }));
   },
   async updateNote(id, p) {
-    return jsonOrThrow(await fetch(`/api/notes/${encodeURIComponent(id)}`, {
+    return jsonOrThrow(await send(`/api/notes/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: JSON_HEADERS,
       body: JSON.stringify(p),
     }));
   },
   async deleteNote(id)   { return await fetch(`/api/notes/${encodeURIComponent(id)}`, { method: "DELETE" }); },
-  async search(q)        { return jsonOrThrow(await fetch(`/api/search?q=${encodeURIComponent(q)}`)); },
-  async calendar(y, m)   { return jsonOrThrow(await fetch(`/api/calendar/${y}/${m}`)); },
-  async backlinks(id)    { return jsonOrThrow(await fetch(`/api/notes/${encodeURIComponent(id)}/backlinks`)); },
+  async search(q)        { return jsonOrThrow(await send(`/api/search?q=${encodeURIComponent(q)}`)); },
+  async calendar(y, m)   { return jsonOrThrow(await send(`/api/calendar/${y}/${m}`)); },
+  async backlinks(id)    { return jsonOrThrow(await send(`/api/notes/${encodeURIComponent(id)}/backlinks`)); },
 
   // -- the dashboard
   async home(month) {
     const qs = month ? `?month=${encodeURIComponent(month)}` : "";
-    return jsonOrThrow(await fetch(`/api/home${qs}`));
+    return jsonOrThrow(await send(`/api/home${qs}`));
   },
 
   // -- workspaces
-  async history() { return jsonOrThrow(await fetch("/api/history")); },
+  async history() { return jsonOrThrow(await send("/api/history")); },
   async noteHistory(id) {
-    return jsonOrThrow(await fetch(`/api/history/${encodeURIComponent(id)}`));
+    return jsonOrThrow(await send(`/api/history/${encodeURIComponent(id)}`));
   },
   async startHistory() {
-    return jsonOrThrow(await fetch("/api/history/init", { method: "POST", headers: JSON_HEADERS }));
+    return jsonOrThrow(await send("/api/history/init", { method: "POST", headers: JSON_HEADERS }));
   },
   async recordChanges() {
-    return jsonOrThrow(await fetch("/api/history/checkpoint", { method: "POST", headers: JSON_HEADERS }));
+    return jsonOrThrow(await send("/api/history/checkpoint", { method: "POST", headers: JSON_HEADERS }));
   },
   async restoreVersion(body) {
-    return jsonOrThrow(await fetch("/api/history/restore", {
+    return jsonOrThrow(await send("/api/history/restore", {
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body),
     }));
   },
-  async workspaces() { return jsonOrThrow(await fetch("/api/workspaces")); },
+  async workspaces() { return jsonOrThrow(await send("/api/workspaces")); },
   // Grouped and checked on the server; the view only draws what it is handed.
-  async bookmarks() { return jsonOrThrow(await fetch("/api/bookmarks")); },
+  async bookmarks() { return jsonOrThrow(await send("/api/bookmarks")); },
   async checkBookmarks() {
     // A POST because it *does* something: this is the one call in the app that
     // reaches out to the addresses in the vault. `jsonOrThrow` so a refusal arrives
     // as a sentence rather than a token error.
-    return jsonOrThrow(await fetch("/api/bookmarks/check", { method: "POST" }));
+    return jsonOrThrow(await send("/api/bookmarks/check", { method: "POST" }));
   },
   async workspace(id) {
-    return jsonOrThrow(await fetch(`/api/workspaces/${encodeURIComponent(id)}`));
+    return jsonOrThrow(await send(`/api/workspaces/${encodeURIComponent(id)}`));
   },
   // The one call that starts a process on this machine, so it carries the header
   // the server asks for -- and which a page you merely visited cannot set.
@@ -139,7 +165,7 @@ const api = {
   // this workspace -- and answers with the argv, so the card can say what it
   // opened rather than implying it opened anything.
   async openWorkspace(id, what, where = {}) {
-    return jsonOrThrow(await fetch(
+    return jsonOrThrow(await send(
       `/api/workspaces/${encodeURIComponent(id)}/open`,
       {
         method: "POST",
@@ -150,9 +176,9 @@ const api = {
   },
 
   // -- transcription
-  async transcribe() { return jsonOrThrow(await fetch("/api/transcribe")); },
+  async transcribe() { return jsonOrThrow(await send("/api/transcribe")); },
   async transcribeStart(payload) {
-    return jsonOrThrow(await fetch("/api/transcribe", {
+    return jsonOrThrow(await send("/api/transcribe", {
       method: "POST",
       headers: JSON_HEADERS,
       body: JSON.stringify(payload),
@@ -164,14 +190,14 @@ const api = {
     const qs = new URLSearchParams({
       name, model, collection, summarize: String(Boolean(summarize)),
     });
-    return jsonOrThrow(await fetch(`/api/transcribe/upload?${qs}`, {
+    return jsonOrThrow(await send(`/api/transcribe/upload?${qs}`, {
       method: "POST",
       headers: { "Content-Type": blob.type || "application/octet-stream" },
       body: blob,
     }));
   },
   async transcribeResummarise(id) {
-    return jsonOrThrow(await fetch("/api/transcribe/summarize", {
+    return jsonOrThrow(await send("/api/transcribe/summarize", {
       method: "POST",
       headers: JSON_HEADERS,
       body: JSON.stringify({ id }),
@@ -181,7 +207,7 @@ const api = {
   // Writing a day's note is the same request the daily scheduler makes: the
   // note is written by the run that summarises it.
   async writeDay(day) {
-    return jsonOrThrow(await fetch("/api/daily/summary", {
+    return jsonOrThrow(await send("/api/daily/summary", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ date: day, refresh: true }),
@@ -193,7 +219,7 @@ const api = {
   // rendering as an empty block you would read as "nothing was done".
   async query(q, on) {
     const params = new URLSearchParams({ q, on });
-    return jsonOrThrow(await fetch(`/api/query?${params}`));
+    return jsonOrThrow(await send(`/api/query?${params}`));
   },
 
   // -- templates
@@ -201,7 +227,7 @@ const api = {
   // jsonOrThrow, unlike the plain reads above: a refused template should say
   // which one and why, not fail silently under a click that did nothing.
   async applyTemplate(p) {
-    return jsonOrThrow(await fetch("/api/templates/apply", {
+    return jsonOrThrow(await send("/api/templates/apply", {
       method: "POST",
       headers: JSON_HEADERS,
       body: JSON.stringify(p),
@@ -211,38 +237,38 @@ const api = {
   // -- board + dependencies
   async board(params = {}) {
     const q = new URLSearchParams(params).toString();
-    return jsonOrThrow(await fetch(`/api/board${q ? "?" + q : ""}`));
+    return jsonOrThrow(await send(`/api/board${q ? "?" + q : ""}`));
   },
   async moveCard(id, stage, beforeId = null) {
-    return jsonOrThrow(await fetch("/api/board/move", {
+    return jsonOrThrow(await send("/api/board/move", {
       method: "POST",
       headers: JSON_HEADERS,
       body: JSON.stringify({ id, stage, before_id: beforeId }),
     }));
   },
-  async deps(id)         { return jsonOrThrow(await fetch(`/api/notes/${encodeURIComponent(id)}/deps`)); },
+  async deps(id)         { return jsonOrThrow(await send(`/api/notes/${encodeURIComponent(id)}/deps`)); },
   async addDep(id, blockerId) {
-    return jsonOrThrow(await fetch(`/api/notes/${encodeURIComponent(id)}/deps`, {
+    return jsonOrThrow(await send(`/api/notes/${encodeURIComponent(id)}/deps`, {
       method: "POST",
       headers: JSON_HEADERS,
       body: JSON.stringify({ blocker_id: blockerId }),
     }));
   },
   async removeDep(id, blockerId) {
-    return jsonOrThrow(await fetch(
+    return jsonOrThrow(await send(
       `/api/notes/${encodeURIComponent(id)}/deps/${encodeURIComponent(blockerId)}`,
       { method: "DELETE" },
     ));
   },
   async tasks(params = {}) {
     const q = new URLSearchParams(params).toString();
-    return jsonOrThrow(await fetch(`/api/tasks${q ? "?" + q : ""}`));
+    return jsonOrThrow(await send(`/api/tasks${q ? "?" + q : ""}`));
   },
 
   // -- mood + pain
-  async mood(days = 365)     { return jsonOrThrow(await fetch(`/api/mood?days=${days}`)); },
-  async insight()            { return jsonOrThrow(await fetch("/api/insight")); },
-  async notesOn(isoDate)     { return jsonOrThrow(await fetch(`/api/notes?date=${encodeURIComponent(isoDate)}`)); },
+  async mood(days = 365)     { return jsonOrThrow(await send(`/api/mood?days=${days}`)); },
+  async insight()            { return jsonOrThrow(await send("/api/insight")); },
+  async notesOn(isoDate)     { return jsonOrThrow(await send(`/api/notes?date=${encodeURIComponent(isoDate)}`)); },
 };
 
 const state = {
@@ -323,14 +349,40 @@ function showView(name) {
   if (name !== "transcribe") stopRecording();
 }
 
+/** Say the one thing that is not about a note, and let it be dismissed. */
+function showNotice(text) {
+  const el = $("#notice");
+  if (!el) return;
+  $("#notice-text").textContent = text;
+  el.classList.remove("hidden");
+}
+
+function clearNotice() {
+  const el = $("#notice");
+  if (el) el.classList.add("hidden");
+}
+
 async function refresh() {
-  [state.notes, state.collections, state.templates] = await Promise.all([
-    api.listNotes(),
-    api.listCollections(),
-    // A picker that cannot load hides itself rather than offering a stale list
-    // you might act on, so a failure here is an empty list, not an exception.
-    api.templates().then((out) => out.templates || []).catch(() => []),
-  ]);
+  let notes;
+  try {
+    [notes, state.collections, state.templates] = await Promise.all([
+      api.listNotes(),
+      api.listCollections(),
+      // A picker that cannot load hides itself rather than offering a stale list
+      // you might act on, so a failure here is an empty list, not an exception.
+      api.templates().then((out) => out.templates || []).catch(() => []),
+    ]);
+  } catch (err) {
+    // A vault that could not be read is not a vault with nothing in it, and the
+    // difference is the whole point of this app: every view here derives its
+    // emptiness from `state.notes`, so without this an unreachable server draws
+    // "nothing open" -- a confident answer to a question nobody could ask. The
+    // app stays up and stays honest instead, and says how to try again.
+    showNotice(err.message);
+    return;
+  }
+  state.notes = notes;
+  clearNotice();
   // Query answers depend on the vault, and the vault is what just changed.
   queryResults.clear();
   render();
@@ -3854,6 +3906,8 @@ window.addEventListener("DOMContentLoaded", async () => {
       await createFromWikilink(title);
     }
   };
+  $("#notice-retry").addEventListener("click", () => refresh());
+
   $("#note-preview").addEventListener("click", followWikilink);
   $("#preview-modal-body").addEventListener("click", followWikilink);
 
@@ -3897,4 +3951,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   // the dependency panel too — otherwise a reloaded page silently loses it.
   if (state.activeId) await renderDeps(state.activeId);
   moveInk();
+
+  // Install as an app. The worker answers from the network first and keeps a
+  // copy only to have something to serve when there is no network, so this is
+  // a fallback and not a cache -- `static/service-worker.js` says why at length.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/service-worker.js").catch(() => {
+      /* no worker is still a working app; it just cannot be opened offline */
+    });
+  }
 });

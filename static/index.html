@@ -5,11 +5,22 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#11111b">
+<!-- installable: the manifest is served from the root, and the service worker
+     (registered in app.js) sits beside it so its scope is the whole app -->
+<link rel="manifest" href="/manifest.webmanifest">
 <title>nookboard</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231e1e2e'/%3E%3Ccircle cx='16' cy='16' r='7' fill='none' stroke='%23f5c2e7' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='2.5' fill='%2389b4fa'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
+  <!-- The one place the app says something is wrong that is not about a note.
+       A vault it could not read is not an empty vault, and without this every
+       view says "nothing open" about files it never opened. -->
+  <p id="notice" class="notice hidden" role="status">
+    <span id="notice-text"></span>
+    <button type="button" id="notice-retry" class="btn">Try again</button>
+  </p>
+
   <header class="topbar">
     <a class="wordmark" href="#/">
       <!-- the three bullet-journal signifiers: task, event, note -->

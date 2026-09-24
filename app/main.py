@@ -28,6 +28,7 @@ from .models import (
 )
 from . import bookmarks
 from . import health
+from . import pwa
 from . import health_run
 from . import history
 from . import history_run
@@ -1661,6 +1662,25 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    @app.get("/manifest.webmanifest")
+    def web_manifest():
+        """The manifest. Served from the root because a browser looks for it as a
+        document beside the app, not as one of the app's assets."""
+        return Response(
+            content=json.dumps(pwa.manifest(), indent=2),
+            media_type=pwa.MANIFEST_TYPE,
+        )
+
+    @app.get("/service-worker.js")
+    def service_worker():
+        """The worker, at the root **on purpose**: a worker's scope is the
+        directory it is served from, so one under `/static/` could only ever
+        control `/static/` and would never see a navigation."""
+        path = static_dir / "service-worker.js"
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="no service worker is installed")
+        return FileResponse(path, media_type=pwa.WORKER_TYPE)
 
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 

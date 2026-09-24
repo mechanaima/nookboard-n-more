@@ -13,10 +13,52 @@ on disk; the server is a thin index over the files.
 ## Run
 
 ```bash
-make dev    # http://127.0.0.1:8765
+make dev    # http://127.0.0.1:8765 -- with --reload, for working on the app
 make test   # pytest
 make test-js
 ```
+
+On boot, as a service, with no terminal open:
+
+```bash
+./tools/install-service.sh            # user service on 127.0.0.1:8765
+./tools/install-service.sh --dry-run  # show the unit, install nothing
+./tools/install-service.sh --remove
+```
+
+It turns on `enable-linger` so it starts at **boot** rather than at login, and it
+runs *without* `--reload` -- this is the app, not a development server, and a
+file watcher left over the vault for the machine's whole uptime is a strange
+thing to own. After editing code: `systemctl --user restart nookboard`. To work
+on it live, run it somewhere else and leave this one alone:
+
+```bash
+uv run uvicorn app.main:app --reload --port 8796
+```
+
+## Install it as an app
+
+It is a PWA, so Chromium will offer to install it (the icon in the address bar,
+or ⋮ → *Install*). The installed window has no browser chrome and remembers its
+own size.
+
+Two files are served from the **root**, which is not a detail: a service
+worker's scope is the directory it is served from, so one under `/static/` could
+only ever control `/static/` -- and the only thing a worker here is for is a
+navigation.
+
+Offline it opens and shows the last thing it loaded, and says which one it is.
+The worker is network-first everywhere -- there is no asset versioning in this
+app to key a cache on, and twice a stale `app.js` was the whole of a bug report
+-- and it never caches `/api/`, because a note app that answers "what is in my
+vault" out of a memory is lying. With no server reachable the app draws the
+notice line at the top instead of an empty vault: *"could not reach nookboard's
+server"* is a different fact from "nothing finished", and the app will not
+render the second when it means the first.
+
+The icons are generated: `./tools/build-icons.sh` renders them from the two
+SVGs beside them, so the sizes the manifest advertises cannot drift from the
+files that exist.
 
 ## Keyboard & deep links
 

@@ -173,6 +173,8 @@ check "preview: blockquote rendered"  '<blockquote>'
 check "preview: wikilink resolved"    'class="wikilink exists"'
 check "preview: query resolved to a linked day" 'class="wikilink[^"]*"[^>]*>2026-09-21</a>'
 check "preview: a tag query resolved to the note carrying the tag" 'class="wikilink[^"]*"[^>]*>Render Check</a>'
+check "installable: the manifest is linked"        'rel="manifest" href="/manifest.webmanifest"'
+check "installable: a theme colour is declared"    'name="theme-color" content="#11111b"'
 check_gone "preview: query not left as a code block" 'language-nookboard'
 check "preview: inline code"          '<code>soil.md</code>'
 

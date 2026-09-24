@@ -15,6 +15,7 @@
                                              22. bookmarks (where things are)
                                              23. note icons (a mark on a note)
                                              24. the preview modal (reading wants the window)
+     25. the notice (the one thing that is not about a note)
                                              15. responsive (last, on purpose)
    The glass: one --wall on body, and every panel samples it through the glass
    tokens in section 1. Read the notes there before moving the wall.
@@ -2973,6 +2974,32 @@ textarea { resize: vertical; line-height: 1.6; }
 /* A place inside a value row is that row's text with somewhere to go, so it
    wears the row's colour rather than the card's dimmer one. */
 .ws-fact__value .ws-place { color: inherit; }
+
+/* 25. the notice ---------------------------------------------------------- */
+/* The app-wide line: the one thing here that is not about a note.
+
+   It exists because the app can now be *opened* offline (it installs), and an
+   unreachable vault used to render as an empty one -- every view derives its
+   emptiness from `state.notes`, so a server that could not be reached drew
+   "nothing open", which is a confident answer to a question nobody could ask.
+
+   `.hidden` is not a general utility in this app (each component declares its
+   own), so this component declares its own too. */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 9px 16px;
+  background: color-mix(in srgb, var(--peach) 14%, var(--mantle));
+  border-bottom: 1px solid color-mix(in srgb, var(--peach) 40%, var(--line));
+  color: var(--peach);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.notice #notice-text { flex: 1; min-width: 0; }
+.notice .btn { flex: none; font-size: 12px; padding: 4px 12px; }
+.notice.hidden { display: none; }
 
 /* 15. responsive ---------------------------------------------------------- */
 @media (max-width: 1320px) {
