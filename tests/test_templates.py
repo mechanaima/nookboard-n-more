@@ -269,6 +269,29 @@ def test_a_malformed_date_is_refused_rather_than_guessed_at(client_factory, seed
     assert got.status_code == 400
 
 
+def test_the_templates_collection_is_offered_before_it_exists(client_factory):
+    """Otherwise you cannot put the first template anywhere.
+
+    The editor's collection dropdown offers what `/api/collections` reports, so a
+    collection that only appears once it has something in it is one you can never
+    put the first thing into.
+    """
+    c = client_factory()
+    assert templates.TEMPLATES_COLLECTION in c.get("/api/collections").json()
+
+
+def test_a_template_moved_out_of_the_collection_stops_being_one(
+    client_factory, seed_note
+):
+    """Unassigning is just as important as assigning."""
+    seed_note("tpl-journal", title="Journal {{date}}", collection="templates")
+    c = client_factory()
+    assert len(c.get("/api/templates").json()["templates"]) == 1
+
+    c.patch("/api/notes/tpl-journal", json={"collection": "journal"})
+    assert c.get("/api/templates").json()["templates"] == []
+
+
 def test_a_template_is_not_a_card_on_the_board(client_factory, seed_note):
     """A shape for notes is not a thing to be doing."""
     _journal_template(seed_note)

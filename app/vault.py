@@ -60,9 +60,33 @@ class Vault:
     # -- api ----------------------------------------------------------------
 
     def write(self, note: Note) -> Path:
+        """Write a note, moving the file when its collection has changed.
+
+        `source_rel` normally sends a write back to the file the note came from,
+        which is what makes editing a vault you did not create non-destructive.
+        But a note's collection *is* its folder here, and on read the folder wins
+        (`_load`). So a changed collection that did not move the file left the
+        frontmatter saying one thing and the folder saying another, with the
+        folder believed -- the collection dropdown appeared to save and then
+        silently reverted on the next read.
+
+        Only nested files move: a file sitting at the vault root has no folder to
+        defer to, so its frontmatter collection stands and there is nothing to
+        reconcile.
+        """
         p = self._path_for(note)
+        stale: Path | None = None
+        if note.source_rel and len(Path(note.source_rel).parts) > 1:
+            wanted = self._managed_path(note.id, note.collection)
+            if (self.root / note.source_rel) != wanted:
+                stale, p = self.root / note.source_rel, wanted
+
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(note.to_markdown())
+        # After the write, never before: a crash between the two must not be able
+        # to lose the note.
+        if stale is not None and stale != p and stale.exists():
+            stale.unlink()
         if self.db is not None:
             self.db.upsert(note)
         return p

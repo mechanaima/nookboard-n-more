@@ -331,7 +331,19 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
 
     @app.get("/api/collections")
     def list_collections():
-        return vault.collections()
+        """The collections, including the templates one even while it is empty.
+
+        Templates are a first-class idea in this app, and the editor's collection
+        dropdown can only offer what already exists -- so leaving `templates` out
+        until something is in it made the first template impossible to create by
+        the obvious route: the collection you would put it in was not on the list
+        until you had already put something in it. Listing it empty costs a row
+        and removes the deadlock.
+        """
+        cols = vault.collections()
+        if templates.TEMPLATES_COLLECTION not in cols:
+            cols = sorted([*cols, templates.TEMPLATES_COLLECTION])
+        return cols
 
     @app.get("/api/notes")
     def list_notes(collection: Optional[str] = None, date: Optional[date] = None,
