@@ -103,7 +103,7 @@ Design decisions worth knowing before you edit it:
 The UI is checked headlessly, not by eyeball alone:
 
 ```bash
-./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 152 DOM assertions
+./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 162 DOM assertions
 ./tools/shot.sh /tmp/shot.png 'http://127.0.0.1:8765/'        # screenshot
 ./tools/contrast.sh 'http://127.0.0.1:8765/#/view/board' .card__chip
 ```
@@ -182,6 +182,9 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
   that folder is *now*: branch, what is uncommitted, when it was last committed,
   the markers the code still carries, and buttons to open it in your editor,
   terminal or file manager (see [Workspaces](#workspaces))
+- **History** — the whole vault under git, in the vault, off until you ask for
+  it: versions for every note, a button to write an old one back, and a list of
+  notes you deleted and can still bring back (see [History](#history))
 
 ## Home
 
@@ -753,6 +756,65 @@ no GitHub sync. Those exist, and they are better at being themselves than this
 would be at imitating them; the point here is that the folder is one card away
 from the note you were already writing.
 
+## History
+
+The vault is a folder of ordinary markdown, and that is what makes this possible:
+**git, in the folder, beside your notes.** Turn it on and every change from then
+on can be undone — a bad edit, a deleted note, an afternoon you regret.
+
+```bash
+curl -X POST localhost:8765/api/history/init    # turn it on (once)
+curl localhost:8765/api/history                 # what changed, what is gone
+curl localhost:8765/api/history/<note-id>       # one note's versions
+curl -X POST localhost:8765/api/history/restore \
+     -H 'content-type: application/json' \
+     -d '{"path": "inbox/soil.md", "rev": "<sha>"}'
+```
+
+**It is off until you ask.** Turning it on writes a `.git` into your vault, which
+is a thing to be asked for rather than a thing that happens to you. The History
+view offers the button; nothing enables it on your behalf.
+
+**A change is recorded after it is saved**, never before — the same ordering as
+the index update, and for the same reason: the note is on disk before git is
+asked anything, so a history that fails can never be the reason a save failed.
+Every commit is authored by `nookboard` rather than by you, because a history that
+claimed you wrote a line you did not write would be worse than no history.
+
+**A commit names the note that changed.** `edit: Soil mix`, `new: Seed trays`,
+`delete: Render Check` — one file per commit, so a commit you read in the log is a
+change you recognise, and untouched notes stay out of someone else's commit.
+
+**Restoring writes one file**, from one old version. It is not `git reset`, and
+nothing else in the vault can move — which is what makes it safe to put behind a
+button. The restore is itself recorded (`restore: soil`), because undo that cannot
+be undone is undo you are afraid to use.
+
+**Unrecorded work is said out loud.** Reordering a column and editing
+dependencies are frontmatter-only writes, and a commit per drag would be a log
+nobody reads, so they are not committed one at a time. They are not hidden
+either: the view lists them under *Not recorded yet* with a button that records
+them (`checkpoint: the vault as it is`). A gap you can see is not a gap.
+
+**Deleted notes come back.** The view lists the notes the vault has lost, each
+with the version that brings it back — and a note that has since been recreated is
+not listed as lost, because offering to restore something already there is a
+question whose answer the app already knows.
+
+**Whether the newest version is the one you have is measured, not assumed.** A
+note edited outside the app is not its own newest commit, and the panel asks git
+rather than calling the top of the list "current".
+
+**The index is excluded.** The `.gitignore` written into the vault covers
+`*.sqlite`: the index is built from the markdown beside it and
+`POST /api/rebuild-index` rebuilds it, so committing it would version a cache next
+to its source.
+
+Two limits worth naming. History starts when you turn it on — there is no past to
+recover from before that, and inventing a baseline to pretend otherwise would be a
+lie with a timestamp. And the app never resolves revision syntax: it has shas,
+which is what `git log` printed and what the panel is holding.
+
 ## API
 
 - `GET    /api/health`
@@ -803,6 +865,20 @@ Workspaces (a note with a `path:`):
   runs the allowlisted binary and answers with the argv; `403` without the app's
   own `X-Nookboard-Action` header, `400` for anything not in the list, `409` when
   the folder is not there
+
+History (git, in the vault, off until you ask):
+
+- `GET    /api/history` → `on`, the recent changes, the notes that are gone, the
+  files that changed but are not recorded yet, and the sentence the view leads
+  with
+- `POST   /api/history/init` → turns it on: a repository, a `.gitignore`, and one
+  commit of the vault as it stands
+- `POST   /api/history/checkpoint` → records everything that has changed, now
+- `GET    /api/history/{note-id}` → that note's versions, newest first; the newest
+  carries `is_now`, measured against the file on disk
+- `POST   /api/history/restore` `{path, rev}` → writes one file back from one old
+  version and records that it was restored; `400` for a revision this app cannot
+  read, or a path outside the vault
 
 Board and dependencies:
 
@@ -970,7 +1046,7 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 668 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 712 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),
@@ -988,8 +1064,12 @@ make test        # 668 pytest — model, vault, obsidian, foreign-vault, db, api
                  #              workspace (what a folder is: git reads, nesting,
                  #              ages, markers, what may be opened and where) and
                  #              the workspace API (the refusals: no header, bad
-                 #              tool, gone folder, a file from outside)
-make test-js     # 165 node:test — rapid-log parsing, calendar maths, wikilinks,
+                 #              tool, gone folder, a file from outside); history
+                 #              (what a commit message says, reading a log back,
+                 #              the parent a deleted note is restored from, what
+                 #              a path may be, and a real repository for the rest:
+                 #              moves, restores, checkpoints, unrecorded work)
+make test-js     # 171 node:test — rapid-log parsing, calendar maths, wikilinks,
                  #              ISO week labels, display helpers, board helpers,
                  #              mood grid helpers, query fences (finding them,
                  #              splicing answers, leaving other languages alone),
@@ -997,17 +1077,22 @@ make test-js     # 165 node:test — rapid-log parsing, calendar maths, wikilink
                  #              the recorder's types), the editor's time wording (a time
                  #              with no date fires nothing), the workspace card's
                  #              wording (branch drift, a subject with no age on it,
-                 #              a disabled opener that names its missing tool), and
-                 #              that every local import exists
+                 #              a disabled opener that names its missing tool),
+                 #              the history wording (a clock for today against a
+                 #              distance for older, a restore that says what it
+                 #              will write), and that every local import exists
 make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
-./tools/check_render.sh   # 152 DOM assertions in headless Chromium
+./tools/check_render.sh   # 162 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether
 the front end actually painted. `make check` runs all of it.
 
 `check_render.sh` seeds its own fixture notes through the API and deletes them
-afterwards, so it does not depend on what happens to be in your vault.
+afterwards, so it does not depend on what happens to be in your vault. Its
+history section asserts whichever state the vault is in — off, on, or the endpoint
+missing — rather than turning history on to make the assertions easy, because
+turning it on writes a `.git` into a notes folder and that is the user's call.
 
 **Date logic must be tested in more than one timezone.** `test-tz` exists
 because a `toISOString()`-based date helper passes on a machine in EDT and is

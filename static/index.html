@@ -28,6 +28,7 @@
       <button data-view="mood"        class="tab"        role="tab">Mood</button>
       <button data-view="transcribe"  class="tab"        role="tab">Transcribe</button>
       <button data-view="workspaces"  class="tab"        role="tab">Workspaces</button>
+      <button data-view="history"     class="tab"        role="tab">History</button>
       <button data-view="collections" class="tab"        role="tab">Collections</button>
       <button data-view="timeline"    class="tab"        role="tab">Timeline</button>
       <button data-view="calendar"    class="tab"        role="tab">Calendar</button>
@@ -296,6 +297,28 @@
       </div>
     </section>
 
+    <section id="history-view" class="history-view hidden">
+      <div class="home-inner">
+
+        <header class="home-hero">
+          <svg class="home-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path fill-rule="evenodd" d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm0 2.4a6.6 6.6 0 1 1 0 13.2 6.6 6.6 0 0 1 0-13.2z"/>
+            <path d="M11.4 7.4h1.2v5.2l3.5 2-.6 1.1-4.1-2.4z"/>
+          </svg>
+          <h1 class="home-title">History</h1>
+          <p class="home-sub" id="history-line" aria-live="polite">reading the vault…</p>
+          <div class="home-actions">
+            <button id="history-start" class="btn btn--ghost hidden" type="button"
+                    title="put this vault under git, beside your notes">Start keeping history</button>
+            <button id="history-record" class="btn btn--ghost hidden" type="button"
+                    title="record everything that has changed, now">Record these changes</button>
+          </div>
+        </header>
+
+        <div id="history-body" class="history-body"></div>
+      </div>
+    </section>
+
     <section id="workspaces-view" class="workspaces-view hidden">
       <div class="home-inner">
 
@@ -500,6 +523,10 @@
           <div class="field field--wide" id="workspace-panel-field" hidden>
             <span class="field-label">workspace</span>
             <div id="workspace-panel" class="workspace-panel"></div>
+          </div>
+          <div class="field field--wide" id="history-panel-field" hidden>
+            <span class="field-label">versions</span>
+            <div id="history-panel" class="history-panel"></div>
           </div>
           <div class="field field--wide">
             <span class="field-label">tags</span>

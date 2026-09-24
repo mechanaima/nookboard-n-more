@@ -34,6 +34,8 @@ HOME_DOM="$(mktemp /tmp/nookboard-home-XXXXXX.html)"
 TRANSCRIBE_DOM="$(mktemp /tmp/nookboard-transcribe-XXXXXX.html)"
 WS_DOM="$(mktemp /tmp/nookboard-ws-XXXXXX.html)"
 WS_NOTE_DOM="$(mktemp /tmp/nookboard-ws-note-XXXXXX.html)"
+HIST_DOM="$(mktemp /tmp/nookboard-history-XXXXXX.html)"
+HIST_JSON="$(mktemp /tmp/nookboard-history-XXXXXX.json)"
 # A repo made for this check, because the assertions need a state that exists
 # on no machine in particular: a real marker in a real comment, and one
 # uncommitted file. Pointing at the checkout instead would make these depend on
@@ -51,7 +53,7 @@ cleanup() {
     curl -s -o /dev/null -X DELETE "$BASE/api/notes/$id" || true
   done
   rm -rf "$PROFILE" "$DOM" "$BOARD_DOM" "$MOOD_DOM" "$HOME_DOM" "$TRANSCRIBE_DOM" \
-    "$WS_DOM" "$WS_NOTE_DOM" "$WS_DIR"
+    "$WS_DOM" "$WS_NOTE_DOM" "$WS_DIR" "$HIST_DOM" "$HIST_JSON"
 }
 trap cleanup EXIT
 
@@ -245,6 +247,19 @@ chromium --headless=new --disable-gpu --no-sandbox \
 
 check_mood() { check_file "$MOOD_DOM" "$1" "$2"; }
 check_mood_absent() { check_absent "$MOOD_DOM" "$1" "$2"; }
+check_min() { # dom-file, name, extended-regex, minimum-hits
+  # For "this card offers at least these", where the exact number depends on what
+  # else happens to be in the vault. A check that runs against a real vault must
+  # not assume it is the only thing in it.
+  local got
+  got="$(grep -oE -- "$3" "$1" | wc -l)"
+  if [ "$got" -ge "$4" ]; then
+    echo "  ok   $2 ($got)"; pass=$((pass+1))
+  else
+    echo "  FAIL $2 (wanted at least $4, got $got)"; fail=$((fail+1))
+  fi
+}
+
 check_count() { # dom-file, name, extended-regex, expected-hits
   local got
   got="$(grep -oE -- "$3" "$1" | wc -l)"
@@ -367,8 +382,8 @@ check_tr_absent "the empty state is not left under a job" 'id="transcribe-list">
 # throw inside renderWorkspaces() leaves the hero's placeholder line and an empty
 # grid, which is what the two _absent checks pin.
 #
-# The fixture points at this checkout, so the assertions hold on any machine and
-# in any vault: a real repo, a real branch, real files, real openers resolved.
+# The fixture is a repo this script builds in /tmp, so the assertions hold on any
+# machine and in any vault: a real repo, a real branch, real files, real openers.
 WS_URL="$BASE/#/view/workspaces"
 chromium --headless=new --disable-gpu --no-sandbox \
   --user-data-dir="$PROFILE" --virtual-time-budget=5000 \
@@ -385,8 +400,8 @@ check_ws "layout in wide mode"           'class="layout is-wide'
 check_ws "editor collapsed with no note" 'class="layout is-wide is-wide-empty"'
 check_ws "a card was built"              'class="ws-card '
 check_ws "the card names the note"       'class="ws-card__title"[^>]*>Render Check Workspace<'
-# The folder is the checkout, so it is a repo and must say so -- and the card has
-# to carry a branch line, which only a successful git read produces.
+# The folder is a git repo, so it is called one and must say so -- and the card
+# has to carry a branch line, which only a successful git read produces.
 check_ws "the folder is called a repo"   'class="ws-card__kind"[^>]*>repo<'
 check_ws "the branch is named"           'class="ws-card__branch"[^>]*>[^<]+<'
 check_ws "a state line was written"      'class="ws-card__state"[^>]*>[^<]+<'
@@ -401,7 +416,10 @@ check_ws "the marker is listed with its place" 'main.py:1'
 check_ws "the marker keeps the words after it" 'TODO: wire the tray icon|TODO wire the tray icon'
 check_ws "the uncommitted file is listed" 'wip.py'
 check_ws "a place is a button, not a line of text" 'class="ws-place"'
-check_count "$WS_DOM" "one marker and one file are openable" 'class="ws-place"' 2
+# At least the fixture's own two, because another workspace in the vault may have
+# places of its own -- and a vault with none but the fixture's is the only case
+# where an exact count would hold.
+check_min "$WS_DOM" "the fixture's marker and file are openable" 'class="ws-place"' 2
 check_ws_absent "the hero line is not left as the placeholder" 'reading the folders'
 check_ws_absent "no card claims no workspaces" 'no workspaces yet<'
 check_ws_absent "the empty state is not left under a card" 'id="workspaces-empty" class="empty-state"'
@@ -430,9 +448,58 @@ check_wsnote "the branch fact is listed"     'class="ws-fact__key">branch<'
 check_wsnote "the folder fact names it"      'class="ws-fact__value">[^<]*nookboard-wsrepo-[^<]*<'
 check_wsnote "the openers are offered here"  'class="ws-open-row"'
 check_wsnote "a place is a button here too"  'class="ws-place"'
-check_count "$WS_NOTE_DOM" "one marker and one file here as well" 'class="ws-place"' 2
+check_min "$WS_NOTE_DOM" "the fixture's marker and file are openable here too" 'class="ws-place"' 2
 check_wsnote_absent "the hint is not still asking for a path" 'point this at a folder'
 check_wsnote_absent "the panel is not left hidden" 'id="workspace-panel-field" class="field field--wide" hidden'
+
+
+# --- render 8: the history view --------------------------------------------
+# This section never turns history on. It is the target vault's setting, and a
+# check that wrote a `.git` into someone's notes folder would be doing exactly the
+# thing the feature makes explicit. So it observes: the view must agree with
+# /api/history whichever way that answers -- off, on, or unreachable.
+HIST_URL="$BASE/#/view/history"
+chromium --headless=new --disable-gpu --no-sandbox \
+  --user-data-dir="$PROFILE" --virtual-time-budget=5000 \
+  --dump-dom "$HIST_URL" > "$HIST_DOM" 2>/dev/null
+
+check_hist() { check_file "$HIST_DOM" "$1" "$2"; }
+check_hist_absent() { check_absent "$HIST_DOM" "$1" "$2"; }
+
+echo "rendering $HIST_URL  ($(wc -c < "$HIST_DOM") bytes of DOM)"
+
+check_hist "history tab marked active"  'data-view="history"[^>]*class="tab active"|class="tab active"[^>]*data-view="history"'
+check_hist "view shown, not hidden"     'id="history-view" class="history-view"'
+check_hist "layout in wide mode"        'class="layout is-wide'
+
+# The hero line says "reading the vault…" until the fetch answers, so a non-empty
+# line that is not the placeholder is the fetch landing and the render completing.
+check_hist_absent "the hero line is not left as the placeholder" 'reading the vault'
+check_hist "the versions row is on the editor"  'id="history-panel-field"'
+
+if ! curl -sf "$BASE/api/history" > "$HIST_JSON" 2>/dev/null; then
+  # No endpoint (an older server): the view has to say so rather than sit blank.
+  check_hist "an unreadable history is said out loud" 'class="history-problem"'
+  check_hist "and the failure names the reason"       'could not read the history'
+elif grep -q '"on":false' "$HIST_JSON"; then
+  check_hist "a block was built"                        'class="history-block__title"'
+  check_hist "history off is a block, not a blank page" 'class="history-block__title">History is off<' 
+  check_hist "and it explains itself"                   'class="history-hint"'
+  # The one button that can change that is offered, and not hidden behind a class
+  check_hist "the way to turn it on is offered"         'id="history-start" class="btn btn--ghost"'
+  check_hist_absent "the start button is not left hidden" 'id="history-start" class="btn btn--ghost hidden"'
+  check_hist_absent "nothing claims a change"           'class="history-row"'
+else
+  check_hist "a block was built"             'class="history-block__title"'
+  check_hist "the changes block is built"   'class="history-block__title">Changes<' 
+  check_hist "the summary line is written"  'id="history-line" aria-live="polite">[^<]+<'
+  # Whatever the vault holds, every row says when and what -- and a version row is
+  # the only place a restore button can appear, so a button implies a row.
+  if grep -q 'class="history-row' "$HIST_DOM"; then
+    check_hist "a recorded change says when" 'class="history-row__when"'
+    check_hist "and says what"              'class="history-row__what"'
+  fi
+fi
 
 echo
 echo "pass=$pass fail=$fail"

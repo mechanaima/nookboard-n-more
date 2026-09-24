@@ -7,6 +7,9 @@ import {
   branchLine, buttons as workspaceButtons, changedFiles, commitLine,
   languageLine, markerCount, markerLine, stateClass,
 } from "./workspace.js";
+import {
+  checkpointLabel, deletedLine, restoreTitle, versionLabel, whenLabel,
+} from "./history.js";
 import { weekKey } from "./week.js";
 import {
   BOARD_TILES, clockTime, greeting, longDate, statTiles, todayAction, todayLine,
@@ -94,6 +97,21 @@ const api = {
   },
 
   // -- workspaces
+  async history() { return jsonOrThrow(await fetch("/api/history")); },
+  async noteHistory(id) {
+    return jsonOrThrow(await fetch(`/api/history/${encodeURIComponent(id)}`));
+  },
+  async startHistory() {
+    return jsonOrThrow(await fetch("/api/history/init", { method: "POST", headers: JSON_HEADERS }));
+  },
+  async recordChanges() {
+    return jsonOrThrow(await fetch("/api/history/checkpoint", { method: "POST", headers: JSON_HEADERS }));
+  },
+  async restoreVersion(body) {
+    return jsonOrThrow(await fetch("/api/history/restore", {
+      method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body),
+    }));
+  },
   async workspaces() { return jsonOrThrow(await fetch("/api/workspaces")); },
   async workspace(id) {
     return jsonOrThrow(await fetch(`/api/workspaces/${encodeURIComponent(id)}`));
@@ -263,7 +281,7 @@ const SIDEBAR_VIEWS = ["rapid", "collections", "timeline", "calendar"];
 //: Views that need the full width and therefore trade away the sidebar: the
 //: board (five columns) and mood (a year of weeks). They keep the editor as a
 //: second column so a note can be read or fixed without leaving the view.
-const WIDE_VIEWS = ["home", "board", "mood", "transcribe", "workspaces"];
+const WIDE_VIEWS = ["home", "board", "mood", "transcribe", "workspaces", "history"];
 
 function showView(name) {
   state.activeView = name;
@@ -282,6 +300,7 @@ function showView(name) {
   if (name === "mood") renderMood();
   if (name === "transcribe") renderTranscribe();
   if (name === "workspaces") renderWorkspaces();
+  if (name === "history") renderHistory();
   // Leaving the view with the microphone open would keep the light on, and there
   // is no visible control left to stop it.
   if (name !== "transcribe") stopRecording();
@@ -309,6 +328,8 @@ async function refresh() {
   // A workspace is read from the folder itself, so any change to a note can
   // change what it says -- and the folder may have moved on since it was read.
   if (state.activeView === "workspaces") await renderWorkspaces();
+  // The vault's past is a fact about the files, and the files just changed.
+  if (state.activeView === "history") await renderHistory();
 }
 
 // A wide view trades the sidebar for itself and keeps the editor alongside, so
@@ -527,6 +548,7 @@ function renderEditor() {
   renderTimeHint();
   $("#note-path").value = n.path || "";
   renderWorkspacePanel();
+  renderHistoryPanel();
   state.activeTags = (n.tags || []).slice();
   $("#note-tags-input").value = "";
   $("#note-recurrence").value = n.recurrence || "";
@@ -2729,6 +2751,180 @@ async function renderWorkspaces() {
   }
 }
 
+// ---- history ---------------------------------------------------------------
+//
+// The vault's past, and one note's versions. Everything in this block reads; the
+// only writes are the ones the server offers, and each button says what it does
+// before it is pressed. Nothing here counts or compares: every fact -- the words
+// for when something happened, whether the newest version is the one on disk --
+// arrives already decided, from the place that has tests.
+
+function historyEl(tag, className, text = null) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== null) node.textContent = text;
+  return node;
+}
+
+function historyRow(when, what, button = null, className = "") {
+  const row = historyEl("div", `history-row ${className}`.trim());
+  row.append(historyEl("span", "history-row__when", when || ""));
+  row.append(historyEl("span", "history-row__what", what || ""));
+  if (button) row.append(button);
+  return row;
+}
+
+function historyBlock(title, rows) {
+  const block = historyEl("section", "history-block");
+  block.append(historyEl("h2", "history-block__title", title));
+  block.append(...rows);
+  return block;
+}
+
+//: A restore is one file, written and re-read: then the whole app is told the
+//: vault changed, because it did.
+async function bringBackFile(path, rev, button) {
+  button.disabled = true;
+  const was = button.textContent;
+  button.textContent = "writing it back…";
+  try {
+    await api.restoreVersion({ path, rev });
+  } catch (err) {
+    button.disabled = false;
+    button.textContent = was;
+    button.title = `could not: ${err.message}`;
+    return;
+  }
+  await refresh();
+  renderEditor();
+  renderHistory();
+  renderHistoryPanel();
+}
+
+// Both of these can be asked for twice at once -- `bringBackFile` re-renders, and
+// so does `renderEditor` (and `refresh`, in this view). Two fetches in flight then
+// both append, and every row appears twice. So each render takes a ticket, and a
+// render that is no longer the newest one stops before it writes anything.
+let historyViewSeq = 0;
+let historyPanelSeq = 0;
+
+async function renderHistory() {
+  const mine = ++historyViewSeq;
+  const body = $("#history-body");
+  const line = $("#history-line");
+  const start = $("#history-start");
+  const record = $("#history-record");
+  if (!body || !line || !start || !record) return;
+  line.textContent = "reading the vault…";
+  body.replaceChildren();
+  let view;
+  try {
+    view = await api.history();
+  } catch (err) {
+    if (mine !== historyViewSeq) return;
+    line.textContent = `could not read the history: ${err.message}`;
+    start.classList.add("hidden");
+    record.classList.add("hidden");
+    return;
+  }
+  if (mine !== historyViewSeq) return;    // a newer render already started
+  line.textContent = view.summary || "";
+  const pending = view.pending || [];
+  start.classList.toggle("hidden", Boolean(view.on));
+  record.classList.toggle("hidden", !view.on || pending.length === 0);
+  record.textContent = checkpointLabel(pending.length);
+
+  if (!view.on) {
+    body.append(historyBlock("History is off", [
+      historyEl("p", "history-hint", view.why || ""),
+      historyEl("p", "history-hint",
+        "It is git, in this vault, beside your notes. Nothing leaves the machine, "
+        + "and every change from then on can be undone."),
+    ]));
+    return;
+  }
+
+  if (pending.length) {
+    // Said out loud rather than hidden. These are the changes the app did not
+    // record one at a time; the button above records them.
+    body.append(historyBlock("Not recorded yet", pending.map((path) => {
+      const row = historyRow("", path);
+      row.classList.add("history-row--pending");
+      return row;
+    })));
+  }
+
+  // Today's rows show a clock instead of "just now" ten times over; older rows
+  // show the distance. Which is which is decided in one place, with tests.
+  const today = localIsoDate();
+  const changes = view.changes || [];
+  body.append(historyBlock("Changes", changes.length
+    ? changes.map((c) => historyRow(whenLabel(c, today), c.subject))
+    : [historyEl("p", "history-hint", "Nothing has changed yet.")]));
+
+  const deleted = view.deleted || [];
+  if (deleted.length) {
+    body.append(historyBlock("Notes to bring back", deleted.map((entry) => {
+      const button = historyEl("button", "btn btn--small", "Bring it back");
+      button.type = "button";
+      button.title = restoreTitle(entry, entry.path);
+      button.addEventListener("click", () => bringBackFile(entry.path, entry.restore_from, button));
+      return historyRow(whenLabel(entry, today), deletedLine(entry), button);
+    })));
+  }
+}
+
+//: The versions of the note in the editor, under the workspace panel. Reads the
+//: *saved* note: a version belongs to a file, and a note that has never been
+//: saved has no file to have versions of.
+async function renderHistoryPanel() {
+  const mine = ++historyPanelSeq;
+  const field = $("#history-panel-field");
+  const panel = $("#history-panel");
+  if (!field || !panel) return;
+  field.hidden = true;
+  panel.replaceChildren();
+  const noteId = state.activeId;
+  if (!noteId || !state.notes.some((n) => n.id === noteId)) return;
+
+  let view;
+  try {
+    view = await api.noteHistory(noteId);
+  } catch (err) {
+    if (mine !== historyPanelSeq) return;
+    field.hidden = false;
+    panel.append(historyEl("p", "history-problem", `could not read versions: ${err.message}`));
+    return;
+  }
+  if (mine !== historyPanelSeq) return;   // a newer render already started
+  if (!view.on) {
+    if (view.why) {
+      field.hidden = false;
+      panel.append(historyEl("p", "history-hint", view.why));
+    }
+    return;
+  }
+  field.hidden = false;
+  if (!view.versions.length) {
+    panel.append(historyEl("p", "history-hint",
+      view.why || "nothing recorded for this note yet"));
+    return;
+  }
+  panel.append(...view.versions.map((version) => {
+    if (version.is_now) {
+      // The version you are looking at, and the server measured that rather than
+      // assuming the newest commit is it.
+      return historyRow(versionLabel(version, localIsoDate()), version.subject || "",
+                        null, "history-row--now");
+    }
+    const button = historyEl("button", "btn btn--small", "Bring this back");
+    button.type = "button";
+    button.title = restoreTitle(version, view.relpath);
+    button.addEventListener("click", () => bringBackFile(view.relpath, version.sha, button));
+    return historyRow(versionLabel(version, localIsoDate()), version.subject || "", button);
+  }));
+}
+
 //: The panel under the editor's folder row. Reads the *saved* note, so a path
 //: that has not been saved yet says so instead of showing the folder it used to
 //: point at.
@@ -3109,6 +3305,32 @@ window.addEventListener("DOMContentLoaded", async () => {
     renderWorkspacePanel();
   });
   $("#workspaces-refresh").addEventListener("click", () => renderWorkspaces());
+
+  $("#history-start").addEventListener("click", async () => {
+    // Asked for, and never automatic: this writes a `.git` into someone's vault.
+    const button = $("#history-start");
+    button.disabled = true;
+    button.textContent = "starting…";
+    try {
+      await api.startHistory();
+    } catch (err) {
+      $("#history-line").textContent = `could not start keeping history: ${err.message}`;
+    }
+    button.disabled = false;
+    renderHistory();
+  });
+
+  $("#history-record").addEventListener("click", async () => {
+    const button = $("#history-record");
+    button.disabled = true;
+    try {
+      await api.recordChanges();
+    } catch (err) {
+      $("#history-line").textContent = `could not record them: ${err.message}`;
+    }
+    button.disabled = false;
+    renderHistory();
+  });
   $("#note-time-clear").addEventListener("click", () => {
     $("#note-at").value = "";
     $("#note-until").value = "";

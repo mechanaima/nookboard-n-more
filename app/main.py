@@ -26,6 +26,8 @@ from .models import (
     MOOD_LEVELS, PAIN_MAX, PAIN_MIN, STAGE_LABELS, Note, Signifier, Stage, Status,
     coerce_pain, is_generated_note_id, reconcile, stage_for_status, stamp_completed,
 )
+from . import history
+from . import history_run
 from . import home
 from . import insight
 from . import workspace
@@ -497,8 +499,11 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             created=date.today(),
             completed=stamp_completed(None, complete=status is Status.COMPLETE),
         )
-        vault.write(note)
-        return note.to_dict()
+        path = vault.write(note)
+        # After the write, never before -- the same ordering as the index update,
+        # and for the same reason: a note that is on disk cannot be lost by the
+        # thing that came along afterwards to describe it.
+        return {**note.to_dict(), "history": _record("new", note.title, [path])}
 
     @app.patch("/api/notes/{note_id}")
     def update_note(note_id: str, payload: dict):
@@ -552,13 +557,183 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             ),
             position=payload.get("position", existing.position),
         )
-        vault.write(updated)
-        return updated.to_dict()
+        # The file a note is *leaving*, if its collection changed: a collection
+        # is a folder here, so that is a move, and a move recorded halfway shows
+        # the note existing in two places at once.
+        before = vault.root / existing.source_rel if existing.source_rel else None
+        path = vault.write(updated)
+        return {**updated.to_dict(), "history": _record("edit", updated.title, [before, path])}
 
     @app.delete("/api/notes/{note_id}", status_code=204)
     def delete_note(note_id: str):
+        """Deleting a note is now recoverable, and the history says which note.
+
+        The path is read *before* the unlink because only the note can name its
+        own file. Deleting something that is not there stays a 204: a delete that
+        already happened is not an error, and this app does not report the
+        absence of a note as a failure to delete it.
+        """
+        _, by_id = _index()
+        gone = by_id.get(note_id)
         vault.delete(note_id)
+        if gone is not None and gone.source_rel:
+            _record("delete", gone.title, [vault.root / gone.source_rel])
         return None
+
+    # -- history -------------------------------------------------------------
+    #
+    # The vault is a folder of ordinary markdown, which is what makes a history
+    # possible at all: git, in the folder, invisible. Nothing here runs on a
+    # schedule and nothing here needs a server -- the vault's past is a `.git`
+    # beside its notes, readable with the same git the notes are readable with.
+
+    def _rel_of(path) -> str:
+        """A path the vault just wrote, as the vault sees it."""
+        if not path:
+            return ""
+        try:
+            return str(Path(path).relative_to(vault.root))
+        except ValueError:
+            # A path outside the vault is not history this app keeps.
+            return ""
+
+    def _record(act: str, title: str, paths) -> dict:
+        """Record one change in the vault's history.
+
+        Always called *after* the write it describes, which is the ordering that
+        makes a history safe: the note is already on disk, so this can only add
+        information. `{"on": False}` when history is off -- not an error, and the
+        same key every time rather than one that appears when convenient.
+        """
+        root = str(vault.root)
+        if not history_run.is_repo(root):
+            return {"on": False}
+        rels = [r for r in (_rel_of(p) for p in paths) if r]
+        return {"on": True, **history_run.commit_change(root, rels, act, title)}
+
+    def _deleted() -> list[dict]:
+        """Notes the vault has lost, each with the version that brings it back.
+
+        A note that has since been recreated is not lost, so it is not offered:
+        asking "restore this?" about something already there is a question whose
+        answer the app already knows.
+        """
+        root = str(vault.root)
+        now = datetime.now(timezone.utc)
+        out = []
+        for entry in history_run.deletions(root):
+            rel = history.safe_relpath(root, entry["path"])
+            if not rel or (Path(root) / rel).exists():
+                continue
+            out.append({**entry, "path": rel, "words": history.version_words(entry, now),
+                        "clock": history.clock_label(entry["when"])})
+        return out
+
+    def _history_state() -> dict:
+        root = str(vault.root)
+        if not history_run.is_repo(root):
+            return {
+                "on": False, "changes": [], "deleted": [], "pending": [],
+                "summary": "History is off.",
+                "why": "Turning it on puts this vault under git, so every change "
+                       "from here on can be undone.",
+            }
+        now = datetime.now(timezone.utc)
+        # The baseline commit is where the vault started, not a change to it --
+        # "2 changes recorded" the moment history is turned on would be counting
+        # the act of counting.
+        changes = [{**e, "words": history.version_words(e, now),
+                    "clock": history.clock_label(e["when"])}
+                   for e in history_run.log_for(root, limit=25)
+                   if e["subject"] != history_run.FIRST_COMMIT]
+        pending = history_run.pending(root)
+        deleted = _deleted()
+        return {
+            "on": True, "why": "", "changes": changes, "deleted": deleted,
+            "pending": pending,
+            "summary": history.summary_line(changes, deleted, now, len(pending)),
+        }
+
+    @app.get("/api/history")
+    def history_state():
+        """The vault's past: what changed, what is not recorded, what is gone."""
+        return _history_state()
+
+    @app.post("/api/history/init")
+    def history_init():
+        """Start keeping history.
+
+        Explicit rather than automatic, because it writes a `.git` into someone's
+        vault: that is a thing to be asked for, not a thing to happen to you.
+        """
+        result = history_run.ensure_repo(str(vault.root))
+        if not result.get("ok"):
+            raise HTTPException(500, f"could not start keeping history: {result.get('why')}")
+        return {**_history_state(), "started": result}
+
+    @app.post("/api/history/checkpoint")
+    def history_checkpoint():
+        """Record everything that has changed, now, because someone asked."""
+        root = str(vault.root)
+        if not history_run.is_repo(root):
+            raise HTTPException(400, "history is not on for this vault")
+        result = history_run.checkpoint(root)
+        if not result.get("ok"):
+            raise HTTPException(500, f"could not record these changes: {result.get('why')}")
+        return {**_history_state(), "recorded": result}
+
+    @app.get("/api/history/{note_id}")
+    def note_history(note_id: str):
+        """One note's versions, newest first.
+
+        A note with no file of its own has no history to show, and says so rather
+        than showing an empty list that reads as "nothing ever happened here".
+        """
+        note = _require_note(note_id)
+        root = str(vault.root)
+        rel = note.source_rel or ""
+        if not history_run.is_repo(root):
+            return {"on": False, "note_id": note_id, "relpath": rel, "versions": [], "why": ""}
+        if not rel:
+            return {"on": True, "note_id": note_id, "relpath": "", "versions": [],
+                    "why": "this note has no file of its own yet"}
+        now = datetime.now(timezone.utc)
+        versions = [{**e, "words": history.version_words(e, now),
+                     "clock": history.clock_label(e["when"])}
+                    for e in history_run.log_for(root, rel, limit=40)]
+        # Whether the newest version is the one on disk is *measured*: a note
+        # edited outside the app is not its own newest commit.
+        if versions:
+            versions[0]["is_now"] = history_run.matches_now(root, rel, versions[0]["sha"])
+        return {"on": True, "note_id": note_id, "relpath": rel, "versions": versions,
+                "why": "" if versions else "nothing recorded for this note yet"}
+
+    @app.post("/api/history/restore")
+    def restore_version(payload: dict):
+        """Put one file back the way it was, and record that it was put back.
+
+        Identified by *path*, not by note id, because that is what a version is a
+        version of -- and because the case this exists for is a note that was
+        deleted, which has no note record left to look itself up by.
+
+        One file, written from one old version: not a `git reset`. Nothing else in
+        the vault can move, which is what makes this safe to offer as a button.
+        """
+        rev = str(payload.get("rev") or "").strip()
+        rel = str(payload.get("path") or "").strip()
+        if not rev:
+            raise HTTPException(400, "which version? pass rev")
+        if not rel:
+            raise HTTPException(400, "which file? pass path")
+        result = history_run.restore_version(str(vault.root), rel, rev)
+        if not result.get("ok"):
+            raise HTTPException(400, str(result.get("why") or "could not restore that version"))
+        # The file on disk changed, so the index is rebuilt from the files.
+        # Deliberately the whole index rather than the one note: a restored note
+        # may be one that the index had no row for at all (it was deleted), and
+        # "which rows need to change" is a question the files already answer.
+        db.rebuild_from(vault.list_all())
+        return {"ok": True, **result, "history": _history_state()}
 
     @app.get("/api/insight")
     def insights():
