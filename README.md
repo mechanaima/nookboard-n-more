@@ -169,9 +169,15 @@ restart — the app rebuilds it from the `.md` files.
 
 ```bash
 make test        # 33 pytest  — model, vault, db, api, backlinks, tags, recurring, export, ics
-make test-js     # 30 node:test — rapid-log parsing, calendar maths, wikilinks, display helpers
+make test-js     # 34 node:test — rapid-log parsing, calendar maths, wikilinks, display helpers
+make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
 ./tools/check_render.sh   # 21 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether
-the front end actually painted. Run all three before calling a UI change done.
+the front end actually painted. `make check` runs all of it.
+
+**Date logic must be tested in more than one timezone.** `test-tz` exists
+because a `toISOString()`-based date helper passes on a machine in EDT and is
+wrong by a day everywhere else — see `localIsoDate()` in `static/js/entry.js`.
+Any new date code should use that helper, never `toISOString()`.
