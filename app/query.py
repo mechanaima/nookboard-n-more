@@ -21,7 +21,8 @@ from datetime import date, timedelta
 from typing import Optional, Sequence
 
 from . import daily, weekly
-from .models import Note, Signifier, Status, iso_week_bounds
+from .models import Note, Signifier, Status, is_generated_note_id, iso_week_bounds
+from .templates import is_template
 
 #: The fence a query is written in, as ```nookboard ... ```
 LANGUAGE = "nookboard"
@@ -46,11 +47,31 @@ class QueryError(ValueError):
     """A query that cannot be understood, or asked for a period that cannot."""
 
 
+#: An ISO week as a period writes it. `in` introduces a period this way, which
+#: is what a trailing `in <word>` has to be told apart from.
+ISO_WEEK_RE = re.compile(r"(?i)^\d{4}-W\d{1,2}$")
+
+
 @dataclass(frozen=True)
 class Query:
-    verb: str                      # "days" | "completed" | "open"
+    verb: str                          # "days" | "completed" | "open"
     period: Optional[str] = None
+    collection: Optional[str] = None   # narrow to one collection by name
     source: str = ""
+
+
+def _split_scope(rest: str) -> tuple[str, Optional[str]]:
+    """Peel a trailing `in <collection>` off a period phrase.
+
+    `in` is already spoken for -- `in 2026-W39` is a period -- so the two are
+    told apart by what follows it: an ISO week makes a period, anything else can
+    only be a collection. `completed in 2026-W39` must not become a search for a
+    collection called 2026-W39.
+    """
+    match = re.search(r"(?i)\s+in\s+(\S.*)$", rest)
+    if match and not ISO_WEEK_RE.match(match.group(1).strip()):
+        return rest[: match.start()].strip(), match.group(1).strip()
+    return rest.strip(), None
 
 
 def parse(text: str) -> Query:
@@ -60,8 +81,23 @@ def parse(text: str) -> Query:
     if not raw:
         raise QueryError("that query is empty")
 
-    if raw in ("open", "open tasks"):
-        return Query(verb="open", source=source)
+    # `open` optionally says `tasks`, and optionally names a collection.
+    if raw == "open" or raw.startswith("open "):
+        rest = source[len("open") :].strip()
+        if rest[:5].lower() == "tasks":
+            rest = rest[5:].strip()
+        if not rest:
+            return Query(verb="open", source=source)
+        # `in` is required here rather than assumed: without it any stray word
+        # would be read as a collection name, so `open tas` would blame the
+        # vault for a typo in the keyword.
+        match = re.match(r"(?i)in\s+(\S.*)$", rest)
+        if not match:
+            raise QueryError(
+                f"don't know how to read `{source}` — try `open tasks` or "
+                "`open tasks in work`"
+            )
+        return Query(verb="open", collection=match.group(1).strip(), source=source)
 
     for verb in ("days", "completed"):
         if raw == verb:
@@ -70,10 +106,12 @@ def parse(text: str) -> Query:
             # Sliced from the original, not the lower-cased copy: the keyword is
             # matched in any case, but an ISO week is written `2026-W01`, and
             # echoing `2026-w01` back at you spells a week nobody writes.
-            period = source[len(verb) :].strip()
+            period, collection = _split_scope(source[len(verb) :].strip())
             if not period:
                 raise QueryError(f"`{verb}` needs to know when — {EXPECTED}")
-            return Query(verb=verb, period=period, source=source)
+            return Query(
+                verb=verb, period=period, collection=collection, source=source
+            )
 
     raise QueryError(f"don't know how to read `{raw}` — {EXPECTED}")
 
@@ -149,17 +187,26 @@ def completed_by_day(
 
 def resolve(query: Query, notes: Sequence[Note], *, on: date) -> str:
     """The markdown a query stands for, right now."""
+    if query.verb == "days":
+        # Said rather than ignored: silently dropping a filter you asked for
+        # would answer a different question than the one in the note.
+        if query.collection:
+            raise QueryError(
+                "`days` lists the days of a span, which do not belong to a "
+                "collection, so there is nothing to narrow"
+            )
+        start, end = bounds(query.period or "", on)
+        return _days_markdown(start, end)
+
+    pool = _pool(query, notes)
+
     if query.verb == "open":
-        return _open_markdown(notes)
-    if query.verb not in ("days", "completed"):
+        return _open_markdown(pool)
+    if query.verb != "completed":
         raise QueryError(f"don't know how to read `{query.source}` — {EXPECTED}")
 
     start, end = bounds(query.period or "", on)
-
-    if query.verb == "days":
-        return _days_markdown(start, end)
-
-    done_by_day = completed_by_day(notes, start, end)
+    done_by_day = completed_by_day(pool, start, end)
     single = start == end
     if not done_by_day:
         # Said, not left blank: an empty gap looks like a query that failed.
@@ -173,6 +220,40 @@ def resolve(query: Query, notes: Sequence[Note], *, on: date) -> str:
         titles = ", ".join(f"[[{n.title}]]" for n in done_by_day[day])
         lines.append(f"- **{day.strftime('%a')} {day.day}** \u2014 {titles}")
     return "\n".join(lines)
+
+
+def _pool(query: Query, notes: Sequence[Note]) -> list[Note]:
+    """The notes a query should consider.
+
+    Naming a collection narrows to exactly that. With none named, the shapes and
+    the notes the program wrote are left out: a template is a shape for other
+    notes and a period note is something the app made, so neither is a thing to
+    be doing -- the same set the board hides. Asking for `templates` by name is a
+    deliberate act, and second-guessing it would be worse than answering.
+    """
+    if query.collection:
+        return _named(notes, query.collection)
+    return [
+        n for n in notes
+        if not is_template(n) and not is_generated_note_id(n.id)
+    ]
+
+
+def _named(notes: Sequence[Note], wanted: str) -> list[Note]:
+    """One collection by name, refusing a name this vault does not have.
+
+    Checked against the collections that exist rather than answering with an
+    empty list: a misspelled collection and an empty one look identical in a
+    note, and only one of them is worth your attention.
+    """
+    known = sorted({n.collection for n in notes if n.collection})
+    for name in known:
+        if name.lower() == wanted.lower():
+            return [n for n in notes if n.collection == name]
+    if not known:
+        raise QueryError(f"there is no `{wanted}` collection — this vault has none")
+    listed = ", ".join(f"`{name}`" for name in known)
+    raise QueryError(f"there is no `{wanted}` collection — you have {listed}")
 
 
 def _span_label(query: Query, start: date, end: date) -> str:

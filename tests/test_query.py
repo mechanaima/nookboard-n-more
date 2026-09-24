@@ -13,10 +13,18 @@ THURSDAY = MONDAY.replace(day=24)
 SUNDAY = MONDAY.replace(day=27)
 
 
-def _task(nid, title, *, completed=None, status=Status.OPEN, signifier=Signifier.TASK):
+def _task(
+    nid,
+    title,
+    *,
+    completed=None,
+    status=Status.OPEN,
+    signifier=Signifier.TASK,
+    collection="journal",
+):
     return Note(
         id=nid,
-        collection="journal",
+        collection=collection,
         title=title,
         body="",
         signifier=signifier,
@@ -65,6 +73,104 @@ def test_a_query_that_cannot_be_read_says_so():
     for bad in ("", "   ", "days", "completed", "count my things", "open the pod bay doors"):
         with pytest.raises(query.QueryError):
             query.parse(bad)
+
+
+# --- narrowing to a collection --------------------------------------------
+
+
+def test_open_tasks_can_be_narrowed_to_one_collection():
+    notes = [
+        _task("a", "Fix printer", collection="work"),
+        _task("b", "Buy ink", collection="journal"),
+    ]
+    out = query.render("open tasks in work", notes, on=THURSDAY)
+    assert "Fix printer" in out
+    assert "Buy ink" not in out
+
+
+def test_a_collection_is_matched_regardless_of_case():
+    notes = [_task("a", "Fix printer", collection="work")]
+    assert "Fix printer" in query.render("open tasks in WORK", notes, on=THURSDAY)
+
+
+def test_the_collection_comes_back_with_its_own_spelling():
+    # As with an ISO week: the vault's spelling is the one that is real.
+    got = query.parse("open tasks in Work")
+    assert got.collection == "Work"
+
+
+def test_completed_can_be_narrowed_to_one_collection():
+    notes = [
+        _task("a", "Ship zine", completed=THURSDAY, status=Status.COMPLETE, collection="work"),
+        _task("b", "Buy ink", completed=THURSDAY, status=Status.COMPLETE, collection="journal"),
+    ]
+    out = query.render("completed this week in work", notes, on=THURSDAY)
+    assert "Ship zine" in out
+    assert "Buy ink" not in out
+
+
+def test_in_an_iso_week_is_still_a_period_and_never_a_collection():
+    # The whole reason `_split_scope` looks at what follows `in`.
+    got = query.parse("completed in 2026-W39")
+    assert (got.period, got.collection) == ("in 2026-W39", None)
+    out = query.render("completed in 2026-W39", [], on=THURSDAY)
+    assert "collection" not in out
+
+
+def test_an_unknown_collection_is_refused_and_names_the_ones_that_exist():
+    notes = [_task("a", "Fix printer", collection="work")]
+    out = query.render("open tasks in wrok", notes, on=THURSDAY)
+    assert "wrok" in out and "`work`" in out
+    assert "Fix printer" not in out
+
+
+def test_a_named_collection_in_an_empty_vault_says_so():
+    out = query.render("open tasks in work", [], on=THURSDAY)
+    assert "none" in out
+
+
+def test_days_refuses_a_collection_rather_than_quietly_ignoring_it():
+    notes = [_task("a", "Fix printer", collection="work")]
+    out = query.render("days this week in work", notes, on=THURSDAY)
+    assert "collection" in out
+    assert "Monday" not in out
+
+
+def test_open_tasks_left_alone_leaves_out_the_shapes_and_the_generated_notes():
+    # A template is a shape for other notes and a period note is something the
+    # app wrote, so neither is a thing to be doing -- the same set the board
+    # hides. Without this, a task-shaped template reads as outstanding work.
+    template = Note(
+        id="tpl-week", collection="templates", title="Weekly shop", body="",
+        signifier=Signifier.TASK, status=Status.OPEN,
+    )
+    generated = Note(
+        id="daily-2026-09-24", collection="daily", title="2026-09-24", body="",
+        signifier=Signifier.TASK, status=Status.OPEN,
+    )
+    out = query.render("open tasks", [template, generated, _task("a", "Fix printer")], on=THURSDAY)
+    assert "Fix printer" in out
+    assert "Weekly shop" not in out
+    assert "2026-09-24" not in out
+
+
+def test_naming_one_of_those_by_name_still_answers():
+    # Hiding a shape from the default view is not the same as forbidding it.
+    template = Note(
+        id="tpl-week", collection="templates", title="Weekly shop", body="",
+        signifier=Signifier.TASK, status=Status.OPEN,
+    )
+    out = query.render("open tasks in templates", [template, _task("a", "Fix printer")], on=THURSDAY)
+    assert "Weekly shop" in out
+    assert "Fix printer" not in out
+
+
+def test_a_stray_word_after_open_is_not_read_as_a_collection():
+    # `in` is required, so a typo is blamed on the keyword rather than reported
+    # as a collection the vault does not have.
+    for bad in ("open tas", "open tasks in"):
+        out = query.render(bad, [], on=THURSDAY)
+        assert "open tasks in work" in out, bad
 
 
 # --- what a period covers -------------------------------------------------

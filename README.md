@@ -431,9 +431,12 @@ completed this week
 | `completed on 2026-09-24` | the same, for one named day |
 | `completed in 2026-W38` | the same, for a named ISO week |
 | `open tasks` | everything still open, linked |
+| `open tasks in work` | the same, for one collection |
+| `completed this week in work` | what was finished in one collection |
 
 Periods: `today`, `yesterday`, `this week`, `last week`, `this month`,
-`last month`, `on <YYYY-MM-DD>`, `in <YYYY-Www>`. Either verb takes any period.
+`last month`, `on <YYYY-MM-DD>`, `in <YYYY-Www>`. Either period-taking verb
+takes any period.
 
 - **The day comes from the note, not the clock.** `this week` in a note dated
   yesterday means *that* week, so a note about last week still reads as last
@@ -449,6 +452,19 @@ Periods: `today`, `yesterday`, `this week`, `last week`, `this month`,
   than running it. A fence in any other language is never touched.
 - **A query that cannot be read says so** where its answer would have been.
   Rendering nothing would look like one that failed.
+- **Adding `in <collection>` narrows it.** Names are matched regardless of case,
+  and a name the vault does not have is refused along with the list of ones it
+  does — a misspelled collection and an empty one are indistinguishable in a
+  note, and only one of them is worth your attention. `in` is already spoken for
+  by `in 2026-W39`, so a trailing `in` followed by an ISO week stays a period.
+- **`days` takes no collection** and says so rather than dropping the filter:
+  the days of a span do not belong to a collection, and answering a slightly
+  different question than the one written is worse than refusing.
+- **With no collection named, shapes and generated notes are left out.** A
+  template is a shape for other notes and a period note is something the app
+  wrote, so neither is a thing to be doing — the same set the board hides.
+  Naming one still answers (`open tasks in templates`): hiding something from a
+  default view is not the same as forbidding it.
 
 ### A weekly template
 
