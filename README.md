@@ -18,6 +18,67 @@ make test   # pytest
 make test-js
 ```
 
+## Keyboard & deep links
+
+| key | action |
+|---|---|
+| `/` | focus search |
+| `n` | new note |
+| `Esc` | close the open note (or blur search) |
+| `Enter` / `,` | commit a tag in the tag field |
+| `Backspace` | in an empty tag field, remove the last tag |
+
+Deep links (shareable, and they survive reload):
+
+```
+#/                          rapid log
+#/view/calendar             calendar tab
+#/note/<id>                 a specific note
+#/view/timeline/note/<id>   a note with the timeline tab selected
+```
+
+## Design
+
+Dark-first, built on **Catppuccin Mocha** with a restrained vaporwave accent
+(a pink → mauve → cyan gradient used sparingly: wordmark, primary button,
+active-tab underline).
+
+The whole visual layer is one hand-written stylesheet —
+`static/css/app.css`, ~13 numbered sections (tokens → reset → typography →
+topbar → sidebar → entries → editor → controls → markdown → calendar →
+motion → responsive). There is **no framework, no build step, and no CDN**;
+`marked` is vendored into `static/vendor/`.
+
+Design decisions worth knowing before you edit it:
+
+- **Every colour comes from a token** in section 1. Components use
+  `color-mix()` against those tokens rather than literal hex, so re-theming
+  means editing the token block and nothing else.
+- **Motion is deliberate and respects `prefers-reduced-motion`.** List rows
+  rise in with a stagger driven by a `--i` custom property; completing a task
+  fires a pop + burst; the tab indicator is a measured sliding pill
+  (`moveInk()` in `app.js` recomputes it on render, resize and font load).
+- **Specificity gotcha:** form controls are styled via
+  `input:not([type="checkbox"])` (specificity 0,1,1). To override it for a
+  single field you need at least a two-class selector — see
+  `.sheet-head input.doc-title`.
+
+### Visual verification
+
+The UI is checked headlessly, not by eyeball alone:
+
+```bash
+./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 21 DOM assertions
+./tools/shot.sh /tmp/shot.png 'http://127.0.0.1:8765/'        # screenshot
+```
+
+`check_render.sh` loads the page in headless Chromium, dumps the post-JS DOM
+and asserts that entries, counts, the tab ink, both editor panes, the rendered
+markdown, tag chips, backlinks and the calendar legend all actually rendered —
+so a JS exception fails the check instead of silently producing a blank pane.
+`shot.sh` uses a throwaway `--user-data-dir`, which sidesteps the profile lock
+that blocks screenshotting while a normal browser session is open.
+
 ## Where data lives
 
 ```
@@ -102,4 +163,15 @@ restart — the app rebuilds it from the `.md` files.
 - SQLite (stdlib) for the search / calendar index
 - Vanilla JS, no build step, no framework
 - `marked` (vendored, MIT) for Markdown rendering
-- Catppuccin Mocha theme
+- Catppuccin Mocha theme, hand-written CSS
+
+## Tests
+
+```bash
+make test        # 33 pytest  — model, vault, db, api, backlinks, tags, recurring, export, ics
+make test-js     # 30 node:test — rapid-log parsing, calendar maths, wikilinks, display helpers
+./tools/check_render.sh   # 21 DOM assertions in headless Chromium
+```
+
+`make test` and `make test-js` cover logic; `check_render.sh` covers whether
+the front end actually painted. Run all three before calling a UI change done.

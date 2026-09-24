@@ -3,127 +3,214 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#11111b">
 <title>nookboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231e1e2e'/%3E%3Ccircle cx='16' cy='16' r='7' fill='none' stroke='%23f5c2e7' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='2.5' fill='%2389b4fa'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
   <header class="topbar">
-    <h1>nookboard</h1>
-    <nav class="tabs">
-      <button data-view="rapid" class="tab active">Rapid Log</button>
-      <button data-view="collections" class="tab">Collections</button>
-      <button data-view="timeline" class="tab">Timeline</button>
-      <button data-view="calendar" class="tab">Calendar</button>
+    <a class="wordmark" href="#/">
+      <!-- the three bullet-journal signifiers: task, event, note -->
+      <svg class="wordmark-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+        <circle cx="4.4" cy="4.6" r="2.5" fill="#f9e2af"/>
+        <circle cx="4.4" cy="11.4" r="2" fill="none" stroke="#89dceb" stroke-width="1.7"/>
+        <rect x="1.9" y="16.4" width="5" height="1.9" rx="0.95" fill="#9399b2"/>
+      </svg>
+      <span class="wordmark-text">nookboard</span>
+    </a>
+
+    <nav class="tabs" role="tablist" aria-label="views">
+      <button data-view="rapid"       class="tab active" role="tab">Rapid Log</button>
+      <button data-view="collections" class="tab"        role="tab">Collections</button>
+      <button data-view="timeline"    class="tab"        role="tab">Timeline</button>
+      <button data-view="calendar"    class="tab"        role="tab">Calendar</button>
+      <span class="tab-ink" aria-hidden="true"></span>
     </nav>
+
     <div class="search-wrap">
-      <input id="search-box" type="search" placeholder="search…" autocomplete="off">
-      <div id="search-results" class="search-results hidden"></div>
+      <span class="search-icon" aria-hidden="true"></span>
+      <input id="search-box" type="search" placeholder="Search notes…" autocomplete="off"
+             aria-label="search notes">
+      <div id="search-results" class="search-results hidden" role="listbox"></div>
     </div>
   </header>
 
   <main class="layout">
     <aside class="sidebar">
+
       <section id="collections-pane" class="pane hidden">
-        <h2>Collections</h2>
-        <ul id="collection-list"></ul>
-        <form id="new-collection-form">
-          <input id="new-collection-name" placeholder="new collection" required>
-          <button type="submit">+</button>
+        <div class="pane-head">
+          <h2>Collections</h2>
+          <span id="collection-count" class="pane-count">0</span>
+        </div>
+        <ul id="collection-list" class="entry-list"></ul>
+        <form id="new-collection-form" class="inline-form">
+          <input id="new-collection-name" placeholder="new collection" required aria-label="new collection name">
+          <button type="submit" class="icon-btn" title="create collection">+</button>
         </form>
       </section>
 
       <section id="rapid-pane" class="pane">
-        <h2>Rapid Log</h2>
-        <p class="hint">• task &nbsp; ○ event &nbsp; – note</p>
-        <form id="rapid-form">
-          <input id="rapid-input" placeholder="Type • buy milk and press Enter" autofocus>
-          <button type="submit">Add</button>
+        <div class="pane-head">
+          <h2>Rapid Log</h2>
+          <span id="rapid-count" class="pane-count">0</span>
+        </div>
+        <p class="legend">
+          <span class="legend-item sig-task"><i class="glyph">•</i> task</span>
+          <span class="legend-item sig-event"><i class="glyph">○</i> event</span>
+          <span class="legend-item sig-note"><i class="glyph">–</i> note</span>
+        </p>
+        <form id="rapid-form" class="inline-form">
+          <input id="rapid-input" placeholder="Type • buy milk and press Enter"
+                 aria-label="rapid log entry">
+          <button type="submit" class="icon-btn" title="add entry">↵</button>
         </form>
-        <ul id="rapid-list"></ul>
+        <ul id="rapid-list" class="entry-list"></ul>
       </section>
 
       <section id="timeline-pane" class="pane hidden">
-        <h2>Timeline</h2>
-        <input type="date" id="timeline-date">
-        <ul id="timeline-list"></ul>
+        <div class="pane-head">
+          <h2>Timeline</h2>
+          <span id="timeline-count" class="pane-count">0</span>
+        </div>
+        <input type="date" id="timeline-date" class="date-input" aria-label="timeline date">
+        <ul id="timeline-list" class="entry-list"></ul>
       </section>
 
       <section id="calendar-pane" class="pane hidden">
-        <h2>Calendar</h2>
+        <div class="pane-head">
+          <h2>Calendar</h2>
+        </div>
         <div class="cal-nav">
-          <button id="cal-prev">‹</button>
+          <button id="cal-prev" class="icon-btn" title="previous month">‹</button>
           <span id="cal-label"></span>
-          <button id="cal-next">›</button>
+          <button id="cal-next" class="icon-btn" title="next month">›</button>
         </div>
         <div class="cal-weekdays">
           <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span>
           <span>Thu</span><span>Fri</span><span>Sat</span>
         </div>
         <div id="calendar-grid" class="cal-grid"></div>
+        <div class="cal-legend">
+          <span class="cal-legend-label">density</span>
+          <i class="cal-sw" data-heat="1"></i>
+          <i class="cal-sw" data-heat="2"></i>
+          <i class="cal-sw" data-heat="3"></i>
+          <span class="cal-legend-end">more</span>
+          <i class="cal-sw cal-sw--today" title="today"></i>
+          <span>today</span>
+        </div>
+        <div id="cal-summary" class="cal-summary"></div>
       </section>
     </aside>
 
     <section class="editor">
-      <div id="empty-state" class="empty">Pick a note, or rapid-log a new one.</div>
-      <article id="note-editor" class="hidden">
-        <input id="note-title" placeholder="title">
-        <div class="editor-row">
-          <select id="note-collection"></select>
-          <select id="note-signifier">
-            <option value="note">– note</option>
-            <option value="task">• task</option>
-            <option value="event">○ event</option>
-          </select>
-          <select id="note-status">
-            <option value="open">open</option>
-            <option value="complete">complete X</option>
-            <option value="migrated">migrated &gt;</option>
-            <option value="scheduled">scheduled &lt;</option>
-            <option value="irrelevant">irrelevant</option>
-          </select>
+      <div id="empty-state" class="empty-state">
+        <div class="empty-mark" aria-hidden="true"></div>
+        <p class="empty-title">Nothing open</p>
+        <p class="empty-sub">Pick a note from the log, or start a fresh one.</p>
+        <button id="new-note-btn" class="btn btn--primary">+ New note</button>
+        <p class="empty-hint">log entries with <kbd>•</kbd> task, <kbd>○</kbd> event, <kbd>–</kbd> note</p>
+      </div>
+
+      <article id="note-editor" class="sheet hidden">
+        <div class="sheet-head">
+          <input id="note-title" class="doc-title" placeholder="Untitled" aria-label="note title">
+          <div class="sheet-badges">
+            <span id="note-status-badge" class="status-badge"></span>
+            <button id="note-close" class="sheet-close" type="button"
+                    title="close note (esc)" aria-label="close note">✕</button>
+          </div>
         </div>
-        <label class="dates-label">dates <input id="note-dates" placeholder="2026-09-23, 2026-09-30"></label>
 
-        <label class="tags-label">tags <input id="note-tags" placeholder="urgent, home, work"></label>
-
-        <label class="recur-label">recurrence
-          <select id="note-recurrence">
-            <option value="">none</option>
-            <option value="daily">daily</option>
-            <option value="weekly">weekly</option>
-            <option value="monthly">monthly</option>
-          </select>
-        </label>
+        <div class="meta-grid">
+          <label class="field">
+            <span class="field-label">collection</span>
+            <select id="note-collection"></select>
+          </label>
+          <label class="field">
+            <span class="field-label">signifier</span>
+            <select id="note-signifier">
+              <option value="task">• Task</option>
+              <option value="event">○ Event</option>
+              <option value="note">– Note</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">status</span>
+            <select id="note-status">
+              <option value="open">Open</option>
+              <option value="complete">Done ✓</option>
+              <option value="migrated">Migrated →</option>
+              <option value="scheduled">Scheduled ←</option>
+              <option value="irrelevant">Dropped</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">recurrence</span>
+            <select id="note-recurrence">
+              <option value="">None</option>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+            </select>
+          </label>
+          <label class="field field--wide">
+            <span class="field-label">dates</span>
+            <input id="note-dates" placeholder="2026-09-23, 2026-09-30">
+          </label>
+          <div class="field field--wide">
+            <span class="field-label">tags</span>
+            <div id="tag-input" class="tag-input">
+              <span id="tag-chips" class="tag-chips"></span>
+              <input id="note-tags-input" class="tag-input__field"
+                     placeholder="add tag…" aria-label="add tag">
+            </div>
+          </div>
+        </div>
 
         <div class="mood-row">
-          <span class="mood-label">mood</span>
-          <button type="button" class="mood" data-mood="great" title="great">😄</button>
-          <button type="button" class="mood" data-mood="good"  title="good">🙂</button>
-          <button type="button" class="mood" data-mood="meh"   title="meh">😐</button>
-          <button type="button" class="mood" data-mood="low"   title="low">😕</button>
-          <button type="button" class="mood" data-mood="bad"   title="bad">😢</button>
-          <button type="button" class="mood" data-mood=""      title="clear">·</button>
+          <span class="field-label">mood</span>
+          <div class="mood-buttons" role="group" aria-label="mood">
+            <button type="button" class="mood" data-mood="great" title="great" aria-label="mood: great">😄</button>
+            <button type="button" class="mood" data-mood="good"  title="good"  aria-label="mood: good">🙂</button>
+            <button type="button" class="mood" data-mood="meh"   title="meh"   aria-label="mood: meh">😐</button>
+            <button type="button" class="mood" data-mood="low"   title="low"   aria-label="mood: low">😕</button>
+            <button type="button" class="mood" data-mood="bad"   title="bad"   aria-label="mood: bad">😢</button>
+          </div>
+          <span id="mood-value" class="mood-value">no mood set</span>
+          <button type="button" class="mood-clear" data-mood="" title="clear mood">clear</button>
         </div>
 
-        <div class="editor-tabs">
-          <button class="editor-tab active" data-mode="split">Split</button>
-          <button class="editor-tab" data-mode="write">Write</button>
-          <button class="editor-tab" data-mode="preview">Preview</button>
+        <div class="editor-tabs" role="tablist" aria-label="editor mode">
+          <button class="editor-tab active" data-mode="split"   role="tab">Split</button>
+          <button class="editor-tab"        data-mode="write"   role="tab">Write</button>
+          <button class="editor-tab"        data-mode="preview" role="tab">Preview</button>
+          <span class="tab-ink" aria-hidden="true"></span>
         </div>
 
         <div class="editor-body" data-mode="split">
-          <textarea id="note-body" placeholder="body (Markdown)"></textarea>
-          <div id="note-preview" class="md-preview"></div>
+          <div class="editor-pane editor-pane--write">
+            <span class="pane-tag">markdown</span>
+            <textarea id="note-body" placeholder="Write in Markdown…  [[link to a note]]" aria-label="note body"></textarea>
+          </div>
+          <div class="editor-pane editor-pane--preview">
+            <span class="pane-tag">rendered</span>
+            <div id="note-preview" class="md-preview"></div>
+          </div>
         </div>
 
         <div class="actions">
-          <button id="note-save" class="primary">Save</button>
-          <button id="note-delete" class="danger">Delete</button>
+          <button id="note-save" class="btn btn--primary">Save</button>
+          <button id="note-delete" class="btn btn--danger">Delete</button>
+          <span id="save-flash" class="save-flash" aria-live="polite"></span>
         </div>
 
         <aside id="backlinks-panel" class="backlinks hidden">
-          <h3>Backlinks</h3>
-          <ul id="backlinks-list"></ul>
+          <h3>Linked from</h3>
+          <ul id="backlinks-list" class="entry-list"></ul>
         </aside>
       </article>
     </section>
