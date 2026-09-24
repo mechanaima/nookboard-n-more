@@ -3,9 +3,30 @@ import { parseRapidInput } from "./rapid.js";
 import { monthGrid, shiftMonth } from "./calendar.js";
 import { extractWikilinks, renderWikilinks } from "./wikilink.js";
 import {
+  STAGES, blockedLabel, blocksLabel, completionWarning, depCandidates,
+  dropBeforeId, resolveTaskRef, shiftStage, stageIndex, summaryText,
+} from "./board.js";
+import {
   signifierGlyph, moodEmoji, statusLabel, escapeHtml,
   highlight, heatLevel, friendlyDate, localIsoDate,
 } from "./entry.js";
+
+// Parse a JSON response, turning FastAPI's `detail` into a real Error so a
+// refused move (a dependency cycle) can be shown instead of swallowed.
+async function jsonOrThrow(resp) {
+  let body = null;
+  try { body = await resp.json(); } catch { /* empty body is fine for 204 */ }
+  if (!resp.ok) {
+    const detail = body && body.detail;
+    const message = Array.isArray(detail)
+      ? detail.map((d) => d.msg || String(d)).join("; ")
+      : (detail || `HTTP ${resp.status}`);
+    throw new Error(message);
+  }
+  return body;
+}
+
+const JSON_HEADERS = { "Content-Type": "application/json" };
 
 const api = {
   async listNotes()      { return (await fetch("/api/notes")).json(); },
@@ -28,6 +49,37 @@ const api = {
   async search(q)        { return (await fetch(`/api/search?q=${encodeURIComponent(q)}`)).json(); },
   async calendar(y, m)   { return (await fetch(`/api/calendar/${y}/${m}`)).json(); },
   async backlinks(id)    { return (await fetch(`/api/notes/${encodeURIComponent(id)}/backlinks`)).json(); },
+
+  // -- board + dependencies
+  async board(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return jsonOrThrow(await fetch(`/api/board${q ? "?" + q : ""}`));
+  },
+  async moveCard(id, stage, beforeId = null) {
+    return jsonOrThrow(await fetch("/api/board/move", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ id, stage, before_id: beforeId }),
+    }));
+  },
+  async deps(id)         { return jsonOrThrow(await fetch(`/api/notes/${encodeURIComponent(id)}/deps`)); },
+  async addDep(id, blockerId) {
+    return jsonOrThrow(await fetch(`/api/notes/${encodeURIComponent(id)}/deps`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ blocker_id: blockerId }),
+    }));
+  },
+  async removeDep(id, blockerId) {
+    return jsonOrThrow(await fetch(
+      `/api/notes/${encodeURIComponent(id)}/deps/${encodeURIComponent(blockerId)}`,
+      { method: "DELETE" },
+    ));
+  },
+  async tasks(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return jsonOrThrow(await fetch(`/api/tasks${q ? "?" + q : ""}`));
+  },
 };
 
 const state = {
@@ -44,6 +96,15 @@ const state = {
   query: "",       // active search query, for highlighting
   activeTags: [],  // committed tags for the open note (chip input)
   ready: false,    // true once the initial render has happened (gates hash sync)
+  // -- board
+  board: null,             // last /api/board payload
+  boardCollection: "",     // "" = all collections
+  hideDone: false,
+  blockedOnly: false,
+  draggingId: null,
+  tasks: [],               // open tasks, for the dependency picker
+  deps: null,              // dependency payload for the open note
+  boardError: null,
 };
 
 const $ = (s) => document.querySelector(s);
@@ -58,15 +119,19 @@ const todayIso = () => localIsoDate(new Date());
 
 /* ---------------------------------------------------------------- views -- */
 
+const SIDEBAR_VIEWS = ["rapid", "collections", "timeline", "calendar"];
+
 function showView(name) {
   state.activeView = name;
-  for (const v of ["rapid", "collections", "timeline", "calendar"]) {
+  for (const v of SIDEBAR_VIEWS) {
     $("#" + v + "-pane").classList.toggle("hidden", v !== name);
   }
+  $("#board-view").classList.toggle("hidden", name !== "board");
   $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === name));
   moveInk();
   if (name === "calendar") renderCalendar();
   render();
+  if (name === "board") renderBoard();
 }
 
 async function refresh() {
@@ -75,9 +140,22 @@ async function refresh() {
     api.listCollections(),
   ]);
   render();
+  // The board is derived server-side (positions, blocked-ness), so it is
+  // re-fetched rather than recomputed from a possibly-stale client copy.
+  if (state.activeView === "board") await renderBoard();
+}
+
+// Board mode trades the sidebar for the board and keeps the editor alongside,
+// so dependencies can be wired while looking at the cards.
+function syncLayoutMode() {
+  const layout = document.querySelector(".layout");
+  const isBoard = state.activeView === "board";
+  layout.classList.toggle("is-board", isBoard);
+  layout.classList.toggle("is-board-empty", isBoard && !state.activeId);
 }
 
 function render() {
+  syncLayoutMode();
   renderCollections();
   renderRapid();
   renderTimeline();
@@ -267,6 +345,7 @@ function renderEditor() {
   $("#note-body").value = n.body;
   $("#note-signifier").value = n.signifier;
   $("#note-status").value = n.status;
+  $("#note-stage").value = n.stage || "todo";
   $("#note-dates").value = (n.dates || []).join(", ");
   state.activeTags = (n.tags || []).slice();
   $("#note-tags-input").value = "";
@@ -324,10 +403,14 @@ async function openEditor(id) {
   aiReset();
   aiSetStatus("");
   state.activeId = id;
+  // On the board the editor is a sibling column that CSS hides until a card is
+  // open, so opening a note has to re-sync the layout mode or nothing appears.
+  syncLayoutMode();
   renderEditor();
   renderRapid();
   renderTimeline();
   await renderBacklinks();
+  await renderDeps(id);
   moveInk();
 }
 
@@ -393,20 +476,34 @@ async function saveEditor() {
   commitTagInput(); // fold a half-typed tag in before saving
   const tags = state.activeTags.slice();
   const nextStatus = $("#note-status").value;
+  const nextStage = $("#note-stage").value;
 
-  await api.updateNote(state.activeId, {
-    title: $("#note-title").value,
-    body: $("#note-body").value,
-    signifier: $("#note-signifier").value,
-    status: nextStatus,
-    collection: $("#note-collection").value,
-    dates,
-    tags,
-    mood: state.activeMood || null,
-    recurrence: $("#note-recurrence").value || null,
-  });
+  try {
+    await api.updateNote(state.activeId, {
+      title: $("#note-title").value,
+      body: $("#note-body").value,
+      signifier: $("#note-signifier").value,
+      status: nextStatus,
+      stage: nextStage,
+      collection: $("#note-collection").value,
+      dates,
+      tags,
+      mood: state.activeMood || null,
+      recurrence: $("#note-recurrence").value || null,
+    });
+  } catch (err) {
+    // A refused save (e.g. a cycle via the raw dependency list) must be visible,
+    // not silently dropped.
+    const flash = $("#save-flash");
+    flash.textContent = err.message;
+    flash.classList.add("show", "save-flash--error");
+    setTimeout(() => flash.classList.remove("show", "save-flash--error"), 4000);
+    return;
+  }
 
-  if (prevStatus !== "complete" && nextStatus === "complete") {
+  // Moving a task to Done from the editor is the same promise as dragging it,
+  // so it gets the same completion burst.
+  if (prevStatus !== "complete" && (nextStatus === "complete" || nextStage === "done")) {
     state.flashId = state.activeId;
   }
   await refresh();
@@ -424,7 +521,9 @@ async function deleteEditor() {
 function closeEditor() {
   if (!state.activeId) return;
   state.activeId = null;
+  clearDeps();
   render();
+  if (state.activeView === "board") renderBoard();
 }
 
 async function createCollection(e) {
@@ -545,6 +644,476 @@ function flashSaved() {
   el.classList.remove("show");
   void el.offsetWidth; // restart the animation
   el.classList.add("show");
+}
+
+/* ------------------------------------------------------------------ board -- */
+/* The board is painted from the server's /api/board payload. Column order is
+   never recomputed here: the server owns it, so a reload can't shuffle cards. */
+
+// Persisted so the filters you chose survive a reload.
+const BOARD_PREFS_KEY = "nookboard.board.prefs";
+
+function loadBoardPrefs() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(BOARD_PREFS_KEY) || "{}");
+    state.hideDone = !!raw.hideDone;
+    state.blockedOnly = !!raw.blockedOnly;
+    state.boardCollection = raw.collection || "";
+  } catch { /* a corrupt pref is not worth failing a boot over */ }
+}
+
+function saveBoardPrefs() {
+  try {
+    localStorage.setItem(BOARD_PREFS_KEY, JSON.stringify({
+      hideDone: state.hideDone,
+      blockedOnly: state.blockedOnly,
+      collection: state.boardCollection,
+    }));
+  } catch { /* private mode / quota — the filters just won't persist */ }
+}
+
+async function renderBoard() {
+  const params = {};
+  if (state.boardCollection) params.collection = state.boardCollection;
+
+  let data;
+  try {
+    data = await api.board(params);
+    state.boardError = null;
+  } catch (err) {
+    state.boardError = err.message;
+    return;
+  }
+  state.board = data;
+
+  $("#board-summary").textContent = summaryText(data.summary);
+  renderBoardCollectionFilter();
+  syncBoardToggles();
+
+  const wrap = $("#board-columns");
+  wrap.innerHTML = "";
+
+  const columns = data.columns.filter((c) => !(state.hideDone && c.id === "done"));
+  wrap.style.setProperty("--cols", String(Math.max(columns.length, 1)));
+  for (const col of columns) wrap.appendChild(buildColumn(col));
+
+  if (state.boardError) showBoardError(state.boardError);
+}
+
+function syncBoardToggles() {
+  const done = $("#board-hide-done");
+  const blocked = $("#board-blocked-only");
+  done.setAttribute("aria-pressed", String(state.hideDone));
+  blocked.setAttribute("aria-pressed", String(state.blockedOnly));
+  $("#board-collection").value = state.boardCollection;
+}
+
+function renderBoardCollectionFilter() {
+  const sel = $("#board-collection");
+  const current = state.boardCollection;
+  const options = ['<option value="">all collections</option>']
+    .concat(state.collections.map(
+      (c) => `<option value="${escapeHtml(c)}"${c === current ? " selected" : ""}>${escapeHtml(c)}</option>`,
+    ));
+  sel.innerHTML = options.join("");
+}
+
+function chip(text) {
+  const span = document.createElement("span");
+  span.className = "card__chip";
+  span.textContent = text;
+  return span;
+}
+
+function buildColumn(col) {
+  const section = document.createElement("section");
+  section.className = "board-col";
+  section.dataset.stage = col.id;
+
+  const head = document.createElement("div");
+  head.className = "board-col__head";
+  const dot = document.createElement("span");
+  dot.className = "board-col__dot";
+  dot.setAttribute("aria-hidden", "true");
+  const name = document.createElement("h3");
+  name.textContent = col.label;
+  const count = document.createElement("span");
+  count.className = "board-col__count";
+  count.textContent = String(col.count);
+  count.title = `${col.count} card${col.count === 1 ? "" : "s"}`;
+  head.append(dot, name, count);
+  section.appendChild(head);
+
+  const list = document.createElement("ul");
+  list.className = "board-col__cards";
+  list.dataset.stage = col.id;
+
+  const visible = col.cards.filter((c) => !(state.blockedOnly && !c.blocked));
+  if (!visible.length) {
+    const empty = document.createElement("li");
+    empty.className = "board-col__empty";
+    empty.textContent = state.blockedOnly
+      ? "nothing blocked"
+      : (col.id === "done" ? "nothing finished yet" : "drop a card here");
+    list.appendChild(empty);
+  } else {
+    for (const card of visible) list.appendChild(buildCard(card, col.id));
+  }
+
+  wireDropTarget(list);
+  section.appendChild(list);
+  return section;
+}
+
+function buildCard(card, stage) {
+  const li = document.createElement("li");
+  li.className = "card";
+  li.dataset.id = card.id;
+  li.dataset.stage = stage;
+  if (card.blocked) li.classList.add("is-blocked");
+  if (stage === "done") li.classList.add("is-done");
+  if (card.id === state.activeId) li.classList.add("is-active");
+  li.draggable = true;
+
+  const title = document.createElement("p");
+  title.className = "card__title" + (card.title ? "" : " card__title--empty");
+  title.textContent = card.title || "untitled";
+  title.title = "open this task";
+  title.addEventListener("click", () => openEditor(card.id));
+  li.appendChild(title);
+
+  const meta = document.createElement("div");
+  meta.className = "card__meta";
+  if (card.collection && card.collection !== "inbox") meta.appendChild(chip(card.collection));
+  for (const t of (card.tags || []).slice(0, 3)) meta.appendChild(chip("#" + t));
+  if (card.dates?.length) meta.appendChild(chip(friendlyDate(card.dates[0], todayIso())));
+  if (meta.childElementCount) li.appendChild(meta);
+
+  // Why it is stuck. The label is built with textContent — note titles are the
+  // user's own text and must never be parsed as markup.
+  const blockedText = blockedLabel(card);
+  if (blockedText) {
+    const box = document.createElement("div");
+    box.className = "card__blocked";
+    const glyph = document.createElement("span");
+    glyph.setAttribute("aria-hidden", "true");
+    glyph.textContent = "\u{1F512}";
+    const label = document.createElement("span");
+    label.textContent = blockedText;
+    box.append(glyph, label);
+    li.appendChild(box);
+  }
+
+  const blocks = blocksLabel(card.blocking);
+  if (blocks) {
+    const p = document.createElement("p");
+    p.className = "card__blocks";
+    p.textContent = "\u26D3 " + blocks;
+    li.appendChild(p);
+  }
+
+  li.appendChild(buildCardControls(card, stage));
+
+  li.addEventListener("dragstart", (e) => {
+    state.draggingId = card.id;
+    li.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    // Firefox refuses to start a drag unless some data is set.
+    e.dataTransfer.setData("text/plain", card.id);
+  });
+  li.addEventListener("dragend", () => {
+    state.draggingId = null;
+    li.classList.remove("dragging");
+  });
+
+  return li;
+}
+
+// Every drag has a tap equivalent: dragging is fine-motor work, which is a poor
+// fit for a hand with arthritis, and it is invisible to a keyboard.
+function buildCardControls(card, stage) {
+  const row = document.createElement("div");
+  row.className = "card__move";
+  row.addEventListener("click", (e) => e.stopPropagation());
+
+  const left = shiftStage(stage, -1);
+  const right = shiftStage(stage, 1);
+
+  row.appendChild(moveButton("\u2039", left, left && `move to ${labelOf(left)}`,
+    () => moveCard(card.id, left)));
+  row.appendChild(moveButton("\u203A", right, right && `move to ${labelOf(right)}`,
+    () => moveCard(card.id, right)));
+
+  if (stage === "done") {
+    row.appendChild(moveButton("\u21BA", "todo", "reopen this task",
+      () => moveCard(card.id, "todo"), "card__bitem--done"));
+  } else {
+    row.appendChild(moveButton("\u2713", "done", "mark done",
+      () => moveCard(card.id, "done"), "card__bitem--done"));
+  }
+  return row;
+}
+
+function moveButton(glyph, target, label, onClick, extraClass = "") {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "card__bitem " + extraClass;
+  b.textContent = glyph;
+  if (!target) {
+    b.disabled = true;
+    b.title = "already at the end";
+    b.setAttribute("aria-label", label || "no further column");
+  } else {
+    b.title = label;
+    b.setAttribute("aria-label", label);
+    b.addEventListener("click", onClick);
+  }
+  return b;
+}
+
+function labelOf(stageId) {
+  const hit = STAGES[stageIndex(stageId)];
+  return hit ? hit.label : stageId;
+}
+
+function wireDropTarget(list) {
+  list.addEventListener("dragover", (e) => {
+    if (!state.draggingId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    list.classList.add("is-over");
+  });
+  list.addEventListener("dragleave", () => list.classList.remove("is-over"));
+  list.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    list.classList.remove("is-over");
+    const id = state.draggingId;
+    if (!id) return;
+
+    // Where the pointer landed, ignoring the card being dragged.
+    const mids = Array.from(list.querySelectorAll(".card"))
+      .filter((el) => el.dataset.id !== id)
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        return { id: el.dataset.id, mid: r.top + r.height / 2 };
+      });
+    await moveCard(id, list.dataset.stage, dropBeforeId(mids, e.clientY));
+  });
+}
+
+function findCard(id) {
+  for (const col of state.board?.columns || []) {
+    const hit = col.cards.find((c) => c.id === id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+async function moveCard(id, stage, beforeId = null) {
+  if (!stage) return;
+
+  // Finishing something whose blocker is still open is usually a mistake, so
+  // ask once — but never forbid it, since sometimes it really is done.
+  if (stage === "done") {
+    const warn = completionWarning(findCard(id));
+    if (warn && !confirm(warn)) return;
+  }
+
+  try {
+    await api.moveCard(id, stage, beforeId);
+  } catch (err) {
+    showBoardError(err.message);
+    return;
+  }
+  await refresh();
+}
+
+function showBoardError(message) {
+  const el = $("#board-summary");
+  if (!el) return;
+  el.textContent = message;
+  el.classList.add("board-summary--error");
+  setTimeout(() => el.classList.remove("board-summary--error"), 4000);
+}
+
+/* ------------------------------------------------------------ dependencies -- */
+
+async function renderDeps(noteId) {
+  if (!noteId) return;
+  let payload;
+  try {
+    payload = await api.deps(noteId);
+  } catch {
+    return;
+  }
+  // The user may have opened another note while this was in flight.
+  if (state.activeId !== noteId) return;
+  state.deps = payload;
+
+  const note = state.notes.find((n) => n.id === noteId);
+  const blockedBy = (note?.blocked_by || []).slice();
+
+  // Fetch every task, not just open ones: finished tasks are not *offered* as
+  // blockers, but they must still be recognisable so the error can say "that
+  // one is already finished" instead of pretending it does not exist.
+  try {
+    state.tasks = await api.tasks({ include_done: true });
+  } catch { state.tasks = []; }
+  if (state.activeId !== noteId) return;
+
+  paintDeps(payload, blockedBy);
+}
+
+function paintDeps(payload, blockedBy) {
+  const badge = $("#deps-state");
+  const blockers = payload.blocked_by || [];
+  if (payload.blocked) {
+    badge.className = "deps-state deps-state--blocked";
+    badge.textContent = "blocked";
+  } else if (blockers.length) {
+    badge.className = "deps-state deps-state--ready";
+    badge.textContent = "unblocked";
+  } else {
+    badge.className = "deps-state";
+    badge.textContent = "no blockers";
+  }
+
+  const list = $("#blocked-by-list");
+  list.innerHTML = "";
+  if (!blockers.length) {
+    const li = document.createElement("li");
+    li.className = "deps-empty";
+    li.textContent = "Nothing gates this — it can be started.";
+    list.appendChild(li);
+  } else {
+    for (const b of blockers) list.appendChild(depChip(b, true));
+  }
+
+  const blocking = payload.blocking || [];
+  const wrap = $("#deps-blocking-wrap");
+  wrap.classList.toggle("hidden", !blocking.length);
+  const bl = $("#deps-blocking");
+  bl.innerHTML = "";
+  for (const n of blocking) {
+    bl.appendChild(depChip({
+      id: n.id, title: n.title, status: n.status, closed: false, missing: false,
+    }, false));
+  }
+
+  // Offer only what makes sense: not itself, not something already waiting, and
+  // nothing that is already finished (a finished task gates nothing).
+  const dl = $("#dep-candidates");
+  dl.innerHTML = "";
+  for (const t of depCandidates(state.tasks.filter(isOpenTask), state.activeId, blockedBy)) {
+    const opt = document.createElement("option");
+    opt.value = t.title || t.id;
+    dl.appendChild(opt);
+  }
+}
+
+function depChip(dep, removable) {
+  const li = document.createElement("li");
+  li.className = "dep-chip";
+  if (dep.missing) li.classList.add("dep-chip--missing");
+  else if (dep.closed) li.classList.add("dep-chip--closed");
+  if (!removable) li.classList.add("dep-chip--passive");
+
+  const glyph = document.createElement("span");
+  glyph.className = "dep-chip__glyph";
+  glyph.setAttribute("aria-hidden", "true");
+  glyph.textContent = dep.missing ? "\u26A0" : (dep.closed ? "\u2713" : "\u{1F512}");
+
+  const label = document.createElement("span");
+  label.className = "dep-chip__label";
+  label.textContent = dep.missing ? `${dep.id} (deleted)` : (dep.title || dep.id);
+  if (!dep.missing) {
+    label.classList.add("dep-chip__label--link");
+    label.title = "open this task";
+    label.addEventListener("click", () => openEditor(dep.id));
+  }
+
+  li.append(glyph, label);
+
+  if (removable) {
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "dep-chip__x";
+    x.textContent = "\u00d7";
+    x.title = `stop waiting on ${dep.title || dep.id}`;
+    x.setAttribute("aria-label", `remove dependency on ${dep.title || dep.id}`);
+    x.addEventListener("click", async (e) => {
+      e.preventDefault();
+      await removeDependency(dep.id);
+    });
+    li.appendChild(x);
+  }
+  return li;
+}
+
+async function addDependency(rawValue) {
+  if (!state.activeId) return;
+  const noteId = state.activeId;
+  const badge = $("#deps-state");
+
+  const existing = (state.deps?.blocked_by || []).map((d) => d.id);
+  const pickable = depCandidates(
+    state.tasks.filter(isOpenTask), noteId, existing,
+  );
+  const blockerId = resolveTaskRef(pickable, rawValue);
+
+  if (!blockerId) {
+    // Be specific: a task that exists but is finished is not "no match", and
+    // saying so is the difference between a puzzle and a usable message.
+    const anywhere = resolveTaskRef(
+      state.tasks.filter((t) => t.id !== noteId && !existing.includes(t.id)),
+      rawValue,
+    );
+    badge.className = "deps-state deps-state--blocked";
+    badge.textContent = anywhere
+      ? "that task is already finished"
+      : "no task matches that";
+    return;
+  }
+
+  try {
+    const payload = await api.addDep(noteId, blockerId);
+    if (state.activeId !== noteId) return;
+    $("#dep-input").value = "";
+    paintDeps(payload, (state.notes.find((n) => n.id === noteId)?.blocked_by || []));
+  } catch (err) {
+    badge.className = "deps-state deps-state--blocked";
+    badge.textContent = err.message;
+    return;
+  }
+  // The graph changed: refresh so the board's blocked flags catch up.
+  await refresh();
+}
+
+async function removeDependency(blockerId) {
+  if (!state.activeId) return;
+  const noteId = state.activeId;
+  try {
+    const payload = await api.removeDep(noteId, blockerId);
+    if (state.activeId !== noteId) return;
+    paintDeps(payload, (state.notes.find((n) => n.id === noteId)?.blocked_by || []));
+  } catch (err) {
+    const badge = $("#deps-state");
+    badge.className = "deps-state deps-state--blocked";
+    badge.textContent = err.message;
+    return;
+  }
+  await refresh();
+}
+
+async function clearDeps() {
+  state.deps = null;
+  const badge = $("#deps-state");
+  if (badge) { badge.className = "deps-state"; badge.textContent = ""; }
+  const list = $("#blocked-by-list");
+  if (list) list.innerHTML = "";
+  const blocking = $("#deps-blocking");
+  if (blocking) blocking.innerHTML = "";
+  $("#deps-blocking-wrap")?.classList.add("hidden");
 }
 
 /* --------------------------------------------------------------- calendar -- */
@@ -928,7 +1497,7 @@ function syncHash() {
   if (location.hash !== next) history.replaceState(null, "", next);
 }
 
-const VALID_VIEWS = ["rapid", "collections", "timeline", "calendar"];
+const VALID_VIEWS = ["rapid", "board", "collections", "timeline", "calendar"];
 
 function readHash() {
   const { view, note } = parseHash();
@@ -948,6 +1517,30 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#note-delete").addEventListener("click", deleteEditor);
   $("#note-close").addEventListener("click", closeEditor);
   $("#new-note-btn").addEventListener("click", createBlankNote);
+
+  // -- board
+  $("#board-collection").addEventListener("change", (e) => {
+    state.boardCollection = e.target.value;
+    saveBoardPrefs();
+    renderBoard();
+  });
+  $("#board-hide-done").addEventListener("click", () => {
+    state.hideDone = !state.hideDone;
+    saveBoardPrefs();
+    renderBoard();
+  });
+  $("#board-blocked-only").addEventListener("click", () => {
+    state.blockedOnly = !state.blockedOnly;
+    saveBoardPrefs();
+    renderBoard();
+  });
+  $("#board-new-task").addEventListener("click", createBlankNote);
+
+  // -- dependencies
+  $("#dep-add-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    addDependency($("#dep-input").value);
+  });
 
   $("#timeline-date").value = todayIso();
   $("#timeline-date").addEventListener("change", renderTimeline);
@@ -1052,6 +1645,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   // Read the deep link BEFORE the first render, then let hash syncing take over.
   const boot = readHash();
+  loadBoardPrefs();
 
   window.addEventListener("hashchange", async () => {
     const before = state.activeId;
@@ -1076,5 +1670,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   state.activeId = boot.note && state.notes.some((n) => n.id === boot.note) ? boot.note : null;
   showView(state.activeView);
   if (state.activeId) await renderBacklinks();
+  // A deep link lands on a note the same way opening it does, so it must load
+  // the dependency panel too — otherwise a reloaded page silently loses it.
+  if (state.activeId) await renderDeps(state.activeId);
   moveInk();
 });

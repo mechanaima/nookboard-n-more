@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS notes (
     mood        TEXT,
     tags_csv    TEXT NOT NULL DEFAULT '',
     recurrence  TEXT,
+    stage       TEXT,
+    blocked_by_csv TEXT NOT NULL DEFAULT '',
+    position    REAL,
     search_text TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notes_collection ON notes(collection);
@@ -48,6 +51,16 @@ CREATE TABLE IF NOT EXISTS recurrence_state (
 );
 """
 
+#: Columns added after the first release. `CREATE TABLE IF NOT EXISTS` is a
+#: no-op on an existing file, so a vault indexed by an older build keeps the old
+#: shape and every read of a new column raises. These additive ALTERs keep the
+#: index disposable without making it stale.
+MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("stage", "TEXT"),
+    ("blocked_by_csv", "TEXT NOT NULL DEFAULT ''"),
+    ("position", "REAL"),
+)
+
 
 def _extract_wikilink_titles(body: str) -> list[str]:
     return wikilink_targets(body)
@@ -60,7 +73,14 @@ class Database:
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        have = {row["name"] for row in self.conn.execute("PRAGMA table_info(notes)")}
+        for column, decl in MIGRATIONS:
+            if column not in have:
+                self.conn.execute(f"ALTER TABLE notes ADD COLUMN {column} {decl}")
 
     def upsert(self, n: Note, mood: str | None = None) -> None:
         search_text = f"{n.title}\n{n.body}".lower()
@@ -69,8 +89,9 @@ class Database:
             """
             INSERT INTO notes (id, collection, title, body, signifier, status,
                                dates_csv, parent_id, created, mood, tags_csv,
-                               recurrence, search_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               recurrence, stage, blocked_by_csv, position,
+                               search_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 collection=excluded.collection,
                 title=excluded.title,
@@ -83,6 +104,9 @@ class Database:
                 mood=COALESCE(excluded.mood, notes.mood),
                 tags_csv=excluded.tags_csv,
                 recurrence=excluded.recurrence,
+                stage=excluded.stage,
+                blocked_by_csv=excluded.blocked_by_csv,
+                position=excluded.position,
                 search_text=excluded.search_text
             """,
             (
@@ -90,7 +114,9 @@ class Database:
                 n.signifier.value, n.status.value,
                 ",".join(d.isoformat() for d in n.dates),
                 n.parent_id, n.created.isoformat(),
-                mood, tags_csv, n.recurrence, search_text,
+                mood, tags_csv, n.recurrence,
+                n.stage, ",".join(n.blocked_by), n.position,
+                search_text,
             ),
         )
         # Update backlink index: drop old, re-insert from current body.
@@ -225,6 +251,8 @@ class Database:
         dates = [date.fromisoformat(d) for d in dates_csv.split(",") if d]
         tags_csv = row["tags_csv"] or ""
         tags = [t for t in tags_csv.split(",") if t]
+        deps_csv = row["blocked_by_csv"] or ""
+        blocked_by = [d for d in deps_csv.split(",") if d]
         return Note(
             id=row["id"],
             collection=row["collection"],
@@ -238,6 +266,9 @@ class Database:
             mood=row["mood"],
             tags=tags,
             recurrence=row["recurrence"],
+            stage=row["stage"],
+            blocked_by=blocked_by,
+            position=row["position"],
         )
 
 

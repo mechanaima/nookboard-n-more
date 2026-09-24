@@ -15,6 +15,8 @@ set -uo pipefail
 BASE="${1:-http://127.0.0.1:8765}"
 TARGET_ID="render-check-target"
 NOTE_ID="render-check"
+BOARD_ID="render-check-blocked"
+BOARD_BLOCKER="render-check-blocker"
 
 if ! curl -sf --max-time 3 "$BASE/api/health" >/dev/null; then
   echo "!! no server at $BASE — start it with 'make dev' first" >&2
@@ -23,10 +25,12 @@ fi
 
 PROFILE="$(mktemp -d /tmp/nookboard-check-XXXXXX)"
 DOM="$(mktemp /tmp/nookboard-dom-XXXXXX.html)"
+BOARD_DOM="$(mktemp /tmp/nookboard-board-XXXXXX.html)"
 cleanup() {
-  curl -s -o /dev/null -X DELETE "$BASE/api/notes/$NOTE_ID" || true
-  curl -s -o /dev/null -X DELETE "$BASE/api/notes/$TARGET_ID" || true
-  rm -rf "$PROFILE" "$DOM"
+  for id in "$NOTE_ID" "$TARGET_ID" "$BOARD_ID" "$BOARD_BLOCKER"; do
+    curl -s -o /dev/null -X DELETE "$BASE/api/notes/$id" || true
+  done
+  rm -rf "$PROFILE" "$DOM" "$BOARD_DOM"
 }
 trap cleanup EXIT
 
@@ -44,20 +48,44 @@ curl -sf -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/js
   \"dates\": [\"2026-09-25\"], \"tags\": [\"fixture\"], \"mood\": \"good\"
 }" || { echo "!! could not seed fixture" >&2; exit 1; }
 
-# --- render ----------------------------------------------------------------
+# Board fixtures: one open blocker, one task waiting on it, one in Doing.
+curl -sf -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/json' -d "{
+  \"id\": \"$BOARD_BLOCKER\", \"collection\": \"inbox\", \"title\": \"Render Check Blocker\",
+  \"signifier\": \"task\", \"status\": \"open\"
+}" || { echo "!! could not seed board fixture" >&2; exit 1; }
+
+curl -sf -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/json' -d "{
+  \"id\": \"$BOARD_ID\", \"collection\": \"inbox\", \"title\": \"Render Check Blocked\",
+  \"signifier\": \"task\", \"status\": \"open\", \"stage\": \"doing\",
+  \"blocked_by\": [\"$BOARD_BLOCKER\"]
+}" || { echo "!! could not seed board fixture" >&2; exit 1; }
+
+pass=0; fail=0
+check_file() { # dom-file, name, extended-regex
+  if grep -qE -- "$3" "$1"; then
+    echo "  ok   $2"; pass=$((pass+1))
+  else
+    echo "  FAIL $2"; fail=$((fail+1))
+  fi
+}
+# Some assertions are about something NOT happening (a pane we expect to be
+# visible, a class that must be absent). Absence needs its own check — an
+# inverted regex would silently pass while claiming the opposite.
+check_absent() { # dom-file, name, extended-regex
+  if grep -qE -- "$3" "$1"; then
+    echo "  FAIL $2 (present, should be absent)"; fail=$((fail+1))
+  else
+    echo "  ok   $2"; pass=$((pass+1))
+  fi
+}
+
+# --- render 1: a note in the rapid log -------------------------------------
 URL="$BASE/#/note/$NOTE_ID"
 chromium --headless=new --disable-gpu --no-sandbox \
   --user-data-dir="$PROFILE" --virtual-time-budget=5000 \
   --dump-dom "$URL" > "$DOM" 2>/dev/null
 
-pass=0; fail=0
-check() { # name, extended-regex
-  if grep -qE -- "$2" "$DOM"; then
-    echo "  ok   $1"; pass=$((pass+1))
-  else
-    echo "  FAIL $1"; fail=$((fail+1))
-  fi
-}
+check() { check_file "$DOM" "$1" "$2"; }
 
 echo "rendering $URL  ($(wc -c < "$DOM") bytes of DOM)"
 
@@ -98,6 +126,50 @@ check "empty-state CTA exists"        'id="new-note-btn"'
 check "note close control exists"     'id="note-close"'
 check "calendar legend present"       'class="cal-legend"'
 check "backlinks block present"       'Linked from'
+
+# dependency panel (editor side)
+check "deps panel present"            'id="deps-field"'
+check "deps blocked-by list present"  'id="blocked-by-list"'
+check "deps picker present"           'id="dep-input"'
+check "deps blocking section present" 'id="deps-blocking"'
+check "deps state badge filled"       'id="deps-state"[^>]*>[^<]+<'
+check "board stage select present"    'id="note-stage"'
+
+# --- render 2: the board with a card open in the editor --------------------
+# Loading the board with a note open is the case that used to leave the layout
+# in its "no note" mode, so the editor stayed display:none. Assert the layout
+# class is board mode AND not the empty variant.
+BURL="$BASE/#/view/board/note/$BOARD_ID"
+chromium --headless=new --disable-gpu --no-sandbox \
+  --user-data-dir="$PROFILE" --virtual-time-budget=5000 \
+  --dump-dom "$BURL" > "$BOARD_DOM" 2>/dev/null
+
+check_board() { check_file "$BOARD_DOM" "$1" "$2"; }
+check_board_absent() { check_absent "$BOARD_DOM" "$1" "$2"; }
+
+echo "rendering $BURL  ($(wc -c < "$BOARD_DOM") bytes of DOM)"
+
+check_board "board tab marked active"      'data-view="board"[^>]*class="tab active"|class="tab active"[^>]*data-view="board"'
+check_board "board view rendered"          'id="board-view" class="board-view"'
+check_board "board summary filled"         'id="board-summary"[^>]*>[^<]+<'
+check_board "all five columns rendered"    'data-stage="backlog"'
+check_board "todo column rendered"         'data-stage="todo"'
+check_board "doing column rendered"        'data-stage="doing"'
+check_board "review column rendered"       'data-stage="review"'
+check_board "done column rendered"         'data-stage="done"'
+check_board "column headers rendered"      'class="board-col__head"'
+check_board "fixture card rendered"        'data-id="render-check-blocked"'
+check_board "blocker card rendered"        'data-id="render-check-blocker"'
+check_board "card move controls rendered"  'class="card__bitem'
+check_board "board filters rendered"       'id="board-blocked-only"'
+check_board "layout in board mode"         'class="layout is-board"'
+# The regression guard for "clicking a card opened nothing": when a note is
+# open the layout must NOT be in its empty-board state, or CSS hides the editor.
+check_board_absent "layout not in empty-board mode" 'layout is-board is-board-empty'
+check_board "blocked card badge rendered"  'class="card__blocked"'
+check_board "lock glyph on blocked card"   '🔒'
+check_board "dependency chip rendered"     'class="dep-chip'
+check_board "blocked state on the note"    'deps-state--blocked'
 
 echo
 echo "pass=$pass fail=$fail"

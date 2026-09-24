@@ -23,6 +23,7 @@
 
     <nav class="tabs" role="tablist" aria-label="views">
       <button data-view="rapid"       class="tab active" role="tab">Rapid Log</button>
+      <button data-view="board"       class="tab"        role="tab">Board</button>
       <button data-view="collections" class="tab"        role="tab">Collections</button>
       <button data-view="timeline"    class="tab"        role="tab">Timeline</button>
       <button data-view="calendar"    class="tab"        role="tab">Calendar</button>
@@ -106,6 +107,27 @@
       </section>
     </aside>
 
+    <section id="board-view" class="board-view hidden">
+      <div class="board-bar">
+        <div class="board-filters">
+          <select id="board-collection" class="board-select" aria-label="filter board by collection"></select>
+          <button id="board-hide-done" class="chip-toggle" type="button" aria-pressed="false">hide done</button>
+          <button id="board-blocked-only" class="chip-toggle" type="button" aria-pressed="false">blocked only</button>
+        </div>
+        <div class="board-bar-right">
+          <span id="board-summary" class="board-summary" aria-live="polite"></span>
+          <button id="board-new-task" class="btn btn--primary board-new" type="button">+ Task</button>
+        </div>
+      </div>
+
+      <p class="board-hint">
+        Drag a card, or use <b>‹ ›</b> on it to move a column at a time.
+        Blocked cards are locked behind whatever they are waiting on.
+      </p>
+
+      <div id="board-columns" class="board-columns"></div>
+    </section>
+
     <section class="editor">
       <div id="empty-state" class="empty-state">
         <div class="empty-mark" aria-hidden="true"></div>
@@ -149,6 +171,16 @@
             </select>
           </label>
           <label class="field">
+            <span class="field-label">board</span>
+            <select id="note-stage">
+              <option value="backlog">Backlog</option>
+              <option value="todo">To do</option>
+              <option value="doing">Doing</option>
+              <option value="review">Review</option>
+              <option value="done">Done</option>
+            </select>
+          </label>
+          <label class="field">
             <span class="field-label">recurrence</span>
             <select id="note-recurrence">
               <option value="">None</option>
@@ -170,6 +202,27 @@
             </div>
           </div>
         </div>
+
+        <section id="deps-field" class="deps-field">
+          <div class="deps-head">
+            <span class="field-label">dependencies</span>
+            <span id="deps-state" class="deps-state" aria-live="polite"></span>
+          </div>
+
+          <ul id="blocked-by-list" class="deps-list"></ul>
+
+          <form id="dep-add-form" class="deps-add">
+            <input id="dep-input" list="dep-candidates" autocomplete="off"
+                   placeholder="waits on… (type a task name)" aria-label="task this one waits on">
+            <button type="submit" class="icon-btn" title="add blocker">+</button>
+          </form>
+          <datalist id="dep-candidates"></datalist>
+
+          <div id="deps-blocking-wrap" class="deps-blocking-wrap hidden">
+            <span class="field-label">blocking</span>
+            <ul id="deps-blocking" class="deps-list deps-list--passive"></ul>
+          </div>
+        </section>
 
         <div class="mood-row">
           <span class="field-label">mood</span>

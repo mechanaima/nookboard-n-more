@@ -37,6 +37,56 @@ class Status(str, Enum):
     IRRELEVANT = "irrelevant"  # struck through
 
 
+class Stage(str, Enum):
+    """Board column — the kanban view's axis.
+
+    Orthogonal to Status in principle, reconciled with it in practice (see
+    `reconcile`): a card in `done` is a complete task, and completing a task
+    moves its card to `done`. Two axes that can disagree would mean the board
+    and the rapid log telling different stories about the same note.
+
+    `None` on a Note means "never placed on the board" — its column is derived
+    from status. That keeps rapid-log entries free of a frontmatter line they
+    have not earned yet.
+    """
+    BACKLOG = "backlog"
+    TODO = "todo"
+    DOING = "doing"
+    REVIEW = "review"
+    DONE = "done"
+
+
+STAGE_LABELS = {
+    Stage.BACKLOG: "Backlog",
+    Stage.TODO: "To do",
+    Stage.DOING: "Doing",
+    Stage.REVIEW: "Review",
+    Stage.DONE: "Done",
+}
+
+
+def stage_for_status(status: Status) -> Stage:
+    """Which column a note belongs in when nobody has placed it by hand."""
+    if status in (Status.COMPLETE, Status.IRRELEVANT):
+        return Stage.DONE
+    return Stage.TODO
+
+
+def reconcile(stage: Optional[str], status: Status) -> tuple[Optional[str], Status]:
+    """Stop the board column and the BuJo status from contradicting each other.
+
+    Called from every write path so both directions work: completing a task
+    from the rapid log moves its card, and dropping a card in Done completes
+    the task. Returns the pair to persist; `None` stage means "keep deriving
+    it", which is how untouched notes stay clean on disk.
+    """
+    if stage == Stage.DONE.value and status not in (Status.COMPLETE, Status.IRRELEVANT):
+        return stage, Status.COMPLETE
+    if status in (Status.COMPLETE, Status.IRRELEVANT) and stage is not None and stage != Stage.DONE.value:
+        return Stage.DONE.value, status
+    return stage, status
+
+
 def _coerce(enum_cls, value, default):
     """Enum lookup that falls back instead of raising.
 
@@ -65,6 +115,14 @@ class Note:
     mood: Optional[str] = None
     tags: list[str] = field(default_factory=list)
     recurrence: Optional[str] = None  # "daily" | "weekly" | "monthly"
+    # -- task management ----------------------------------------------------
+    # Board column. None = derive from status (never explicitly placed).
+    stage: Optional[str] = None
+    # Task ids this note waits on. Stored in ONE direction only: the reverse
+    # ("what does this block?") is derived, so the two views cannot drift.
+    blocked_by: list[str] = field(default_factory=list)
+    # Explicit order within its column. None sorts last, by creation date.
+    position: Optional[float] = None
     # Where this note lives in the vault, relative to the vault root. Set by
     # Vault on read so writes return to the same file. Never persisted to
     # frontmatter, and excluded from equality so round-trip tests are unaffected.
@@ -84,6 +142,9 @@ class Note:
             "mood": self.mood,
             "tags": list(self.tags),
             "recurrence": self.recurrence,
+            "stage": self.stage,
+            "blocked_by": list(self.blocked_by),
+            "position": self.position,
         }
         # Obsidian resolves [[Title]] by filename or alias, never by our
         # `title:` field, so record the title as an alias to make the same
@@ -126,6 +187,29 @@ class Note:
         except ValueError:
             created = date.today()
 
+        # A foreign vault may write deps as a lone id, a comma list, or a YAML
+        # sequence; accept all three. Unknown column names are dropped rather
+        # than raising — a note we cannot fully classify still opens.
+        blocked_by: list[str] = []
+        raw_deps = meta.get("blocked_by") or []
+        if isinstance(raw_deps, str):
+            raw_deps = raw_deps.replace(",", " ").split()
+        for raw in raw_deps:
+            dep = str(raw).strip()
+            if dep and dep not in blocked_by:
+                blocked_by.append(dep)
+
+        stage = meta.get("stage")
+        try:
+            stage = Stage(str(stage)).value if stage else None
+        except ValueError:
+            stage = None
+
+        try:
+            position = float(meta["position"]) if meta.get("position") is not None else None
+        except (TypeError, ValueError):
+            position = None
+
         return cls(
             id=stem,
             collection=str(meta.get("collection") or "inbox"),
@@ -139,12 +223,19 @@ class Note:
             mood=meta.get("mood"),
             tags=tags,
             recurrence=meta.get("recurrence"),
+            stage=stage,
+            blocked_by=blocked_by,
+            position=position,
         )
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["signifier"] = self.signifier.value
         d["status"] = self.status.value
+        # Always report a concrete column: a note nobody has placed on the
+        # board still belongs in one, so the client never has to re-derive
+        # this rule (and cannot get it subtly wrong).
+        d["stage"] = self.stage or stage_for_status(self.status).value
         d["dates"] = [x.isoformat() for x in self.dates]
         d["created"] = self.created.isoformat()
         return d

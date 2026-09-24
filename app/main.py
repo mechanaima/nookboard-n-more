@@ -8,12 +8,21 @@ from pathlib import Path
 from datetime import date
 from typing import Optional
 
+from dataclasses import replace
+
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from pydantic import BaseModel, Field
 
-from .models import Note, Signifier, Status
+from .deps import (
+    STAGE_ORDER, board_summary, check_blockers, index_by_id, is_blocked,
+    is_closed, next_position, normalize_blocked_by, plan_move, reconcile_move,
+    resolve, sort_column, stage_of, blocking as blocking_notes,
+)
+from .models import (
+    STAGE_LABELS, Note, Signifier, Stage, Status, reconcile, stage_for_status,
+)
 from .vault import Vault
 from .db import Database
 from .ics import notes_to_ics
@@ -34,6 +43,21 @@ class NoteIn(BaseModel):
     mood: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
     recurrence: Optional[str] = None
+    stage: Optional[str] = None
+    blocked_by: list[str] = Field(default_factory=list)
+    position: Optional[float] = None
+
+
+class MoveIn(BaseModel):
+    """A card drop. `before_id` makes the move self-describing: the client says
+    where the card landed, the server decides the ordering numbers."""
+    id: str
+    stage: str
+    before_id: Optional[str] = None
+
+
+class DepIn(BaseModel):
+    blocker_id: str
 
 
 def create_app(vault_root: Path | None = None, settings: Settings | None = None) -> FastAPI:
@@ -96,20 +120,75 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         except KeyError:
             raise HTTPException(404, "note not found")
 
+    def _require_note(note_id):
+        if not note_id:
+            raise HTTPException(400, "id required")
+        try:
+            return vault.read(str(note_id))
+        except KeyError:
+            raise HTTPException(404, "note not found")
+
+    def _index() -> tuple[list[Note], dict[str, Note]]:
+        notes = vault.list_all()
+        return notes, index_by_id(notes)
+
+    def _coerce_enum(enum_cls, value, field):
+        try:
+            return enum_cls(value)
+        except ValueError:
+            raise HTTPException(400, f"unknown {field}: {value!r}")
+
+    def _coerce_stage(value) -> Optional[str]:
+        if value is None or value == "":
+            return None
+        return _coerce_enum(Stage, value, "stage").value
+
+    def _card(note: Note, by_id: dict[str, Note]) -> dict:
+        """One board card: the note plus everything the board needs to draw it
+        without asking again — whether it is stuck, on what, and how much it
+        in turn is holding up."""
+        blockers = resolve(note.blocked_by, by_id)
+        open_blockers = [b for b in blockers if not b["closed"]]
+        card = note.to_dict()
+        card["blocked"] = bool(open_blockers)
+        card["blockers"] = blockers
+        card["open_blockers"] = open_blockers
+        card["blocking"] = len(blocking_notes(note.id, by_id.values()))
+        return card
+
+    def _deps_payload(note: Note, by_id: dict[str, Note]) -> dict:
+        blockers = resolve(note.blocked_by, by_id)
+        return {
+            "id": note.id,
+            "blocked": any(not b["closed"] for b in blockers),
+            "blocked_by": blockers,
+            "blocking": [c.to_dict() for c in blocking_notes(note.id, by_id.values())],
+        }
+
     @app.post("/api/notes", status_code=201)
     def create_note(payload: NoteIn):
+        stage, status = reconcile(_coerce_stage(payload.stage), payload.status)
+        position = payload.position
+        if position is None and payload.signifier is Signifier.TASK:
+            # Give a new task its slot at the bottom of its column now: ordering
+            # by `created` alone cannot separate tasks captured the same day.
+            _, by_id = _index()
+            position = next_position(by_id.values(), stage or stage_for_status(status).value)
         note = Note(
             id=payload.id,
             collection=payload.collection,
             title=payload.title,
             body=payload.body,
             signifier=payload.signifier,
-            status=payload.status,
+            status=status,
             dates=payload.dates,
             parent_id=payload.parent_id,
             mood=payload.mood,
             tags=payload.tags,
             recurrence=payload.recurrence,
+            stage=stage,
+            blocked_by=[d for d in payload.blocked_by if d != payload.id],
+            position=position,
             created=date.today(),
         )
         vault.write(note)
@@ -117,26 +196,45 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
 
     @app.patch("/api/notes/{note_id}")
     def update_note(note_id: str, payload: dict):
-        try:
-            existing = vault.read(note_id)
-        except KeyError:
-            raise HTTPException(404, "note not found")
+        existing = _require_note(note_id)
         new_dates = existing.dates
         if "dates" in payload:
             new_dates = [date.fromisoformat(d) for d in payload["dates"]]
-        updated = Note(
-            id=existing.id,
+
+        # Dependencies are validated here rather than at the board level so any
+        # caller — editor, import, script — gets the same cycle protection.
+        blocked_by = existing.blocked_by
+        if "blocked_by" in payload:
+            _, by_id = _index()
+            proposed = normalize_blocked_by(
+                payload["blocked_by"], note_id=note_id, by_id=by_id
+            )
+            cycle = check_blockers(note_id, proposed, by_id)
+            if cycle:
+                raise HTTPException(409, "dependency cycle: " + " \u2192 ".join(cycle))
+            blocked_by = proposed
+
+        status = _coerce_enum(Status, payload.get("status", existing.status.value), "status")
+        stage = _coerce_stage(payload.get("stage", existing.stage))
+        stage, status = reconcile(stage, status)
+
+        updated = replace(
+            existing,
             collection=payload.get("collection", existing.collection),
             title=payload.get("title", existing.title),
             body=payload.get("body", existing.body),
-            signifier=Signifier(payload.get("signifier", existing.signifier.value)),
-            status=Status(payload.get("status", existing.status.value)),
+            signifier=_coerce_enum(
+                Signifier, payload.get("signifier", existing.signifier.value), "signifier"
+            ),
+            status=status,
             dates=new_dates,
             parent_id=payload.get("parent_id", existing.parent_id),
             mood=payload.get("mood", existing.mood),
             tags=payload.get("tags", existing.tags),
             recurrence=payload.get("recurrence", existing.recurrence),
-            created=existing.created,
+            stage=stage,
+            blocked_by=blocked_by,
+            position=payload.get("position", existing.position),
         )
         vault.write(updated)
         return updated.to_dict()
@@ -161,6 +259,114 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         except KeyError:
             raise HTTPException(404, "note not found")
         return [b.to_dict() for b in db.backlinks_for_title(n.title)]
+
+    # -- board (kanban) + dependencies --------------------------------------
+    #
+    # The board is derived, never stored: columns come from each note's stage,
+    # and blocked-ness is recomputed from the graph on every read. So completing
+    # a blocker unblocks its dependents immediately, with nothing to sync.
+
+    @app.get("/api/board")
+    def board(collection: Optional[str] = None, tag: Optional[str] = None):
+        notes, by_id = _index()
+        if collection:
+            notes = [n for n in notes if n.collection == collection]
+        if tag:
+            notes = [n for n in notes if tag in n.tags]
+
+        columns = []
+        for stage in STAGE_ORDER:
+            cards = sort_column([n for n in notes if stage_of(n) == stage.value])
+            columns.append({
+                "id": stage.value,
+                "label": STAGE_LABELS[stage],
+                "count": len(cards),
+                "cards": [_card(n, by_id) for n in cards],
+            })
+
+        stuck = sort_column([n for n in notes if is_blocked(n, by_id)])
+        return {
+            "columns": columns,
+            "summary": board_summary(notes, by_id),
+            "blocked": [_card(n, by_id) for n in stuck],
+        }
+
+    @app.post("/api/board/move")
+    def move_card(payload: MoveIn):
+        """Drop a card into a column, optionally before a given card.
+
+        Positions are recomputed server-side and rewritten as clean integers, so
+        the ordering in the Markdown stays readable and drags cannot drift into
+        ever-smaller fractional gaps.
+        """
+        existing = _require_note(payload.id)
+        stage = _coerce_enum(Stage, payload.stage, "stage")
+        notes, by_id = _index()
+
+        # A drop names its intent as a column, so the column wins over the
+        # task's previous status (see reconcile_move).
+        new_stage, new_status = reconcile_move(stage.value, existing.status)
+        moved = replace(existing, stage=new_stage, status=new_status)
+
+        target = sort_column([
+            n for n in notes
+            if n.id != moved.id and stage_of(n) == stage.value
+        ])
+        positions = plan_move(target, moved, payload.before_id)
+
+        for note_id, pos in positions.items():
+            note = moved if note_id == moved.id else by_id[note_id]
+            vault.write(replace(note, position=pos))
+
+        return {
+            "id": moved.id,
+            "stage": stage_of(moved),
+            "status": moved.status.value,
+            "positions": positions,
+        }
+
+    @app.get("/api/notes/{note_id}/deps")
+    def get_deps(note_id: str):
+        note = _require_note(note_id)
+        _, by_id = _index()
+        return _deps_payload(note, by_id)
+
+    @app.post("/api/notes/{note_id}/deps")
+    def add_dep(note_id: str, payload: DepIn):
+        note = _require_note(note_id)
+        blocker_id = str(payload.blocker_id or "").strip()
+        if not blocker_id:
+            raise HTTPException(400, "blocker_id required")
+        if blocker_id == note_id:
+            raise HTTPException(409, "a task cannot block itself")
+        _, by_id = _index()
+        if blocker_id not in note.blocked_by:
+            cycle = check_blockers(note_id, [blocker_id], by_id)
+            if cycle:
+                raise HTTPException(409, "dependency cycle: " + " \u2192 ".join(cycle))
+            note = replace(note, blocked_by=note.blocked_by + [blocker_id])
+            vault.write(note)
+        return _deps_payload(note, by_id)
+
+    @app.delete("/api/notes/{note_id}/deps/{blocker_id}")
+    def remove_dep(note_id: str, blocker_id: str):
+        note = _require_note(note_id)
+        _, by_id = _index()
+        if blocker_id in note.blocked_by:
+            note = replace(note, blocked_by=[d for d in note.blocked_by if d != blocker_id])
+            vault.write(note)
+        return _deps_payload(note, by_id)
+
+    @app.get("/api/tasks")
+    def list_tasks(include_done: bool = False, collection: Optional[str] = None):
+        """Flat task list — the raw material for the dependency picker."""
+        notes, by_id = _index()
+        tasks = [n for n in notes if n.signifier is Signifier.TASK or n.blocked_by]
+        if collection:
+            tasks = [n for n in tasks if n.collection == collection]
+        if not include_done:
+            tasks = [n for n in tasks if not is_closed(n)]
+        return [_card(n, by_id) for n in sort_column(tasks)]
 
     @app.post("/api/recurring/run")
     def trigger_recurring():
@@ -234,14 +440,6 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             except LLMError as exc:
                 yield _line({"kind": "error", "message": str(exc)})
         return StreamingResponse(gen(), media_type="application/x-ndjson")
-
-    def _require_note(note_id):
-        if not note_id:
-            raise HTTPException(400, "id required")
-        try:
-            return vault.read(str(note_id))
-        except KeyError:
-            raise HTTPException(404, "note not found")
 
     def _link_candidates(note, limit: int = 40) -> list[str]:
         """Titles worth offering the model, best term-overlap first."""
