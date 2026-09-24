@@ -18,6 +18,8 @@ from typing import Optional
 
 import frontmatter
 
+from .obsidian import extract_inline_tags, split_frontmatter_tags
+
 
 class Signifier(str, Enum):
     """BuJo bullet signifiers. None = general note, not a bullet."""
@@ -35,6 +37,20 @@ class Status(str, Enum):
     IRRELEVANT = "irrelevant"  # struck through
 
 
+def _coerce(enum_cls, value, default):
+    """Enum lookup that falls back instead of raising.
+
+    Foreign vaults may carry values we do not know (or none at all); a note
+    we cannot classify is better than a note we refuse to open.
+    """
+    if value is None:
+        return default
+    try:
+        return enum_cls(str(value))
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Note:
     id: str
@@ -49,6 +65,10 @@ class Note:
     mood: Optional[str] = None
     tags: list[str] = field(default_factory=list)
     recurrence: Optional[str] = None  # "daily" | "weekly" | "monthly"
+    # Where this note lives in the vault, relative to the vault root. Set by
+    # Vault on read so writes return to the same file. Never persisted to
+    # frontmatter, and excluded from equality so round-trip tests are unaffected.
+    source_rel: Optional[str] = field(default=None, compare=False, repr=False)
 
     def to_markdown(self) -> str:
         post = frontmatter.Post(self.body)
@@ -65,24 +85,59 @@ class Note:
             "tags": list(self.tags),
             "recurrence": self.recurrence,
         }
+        # Obsidian resolves [[Title]] by filename or alias, never by our
+        # `title:` field, so record the title as an alias to make the same
+        # wikilink work in both apps.
+        if self.title:
+            post.metadata["aliases"] = [self.title]
         return frontmatter.dumps(post)
 
     @classmethod
-    def from_markdown(cls, md: str) -> "Note":
+    def from_markdown(cls, md: str, *, fallback_id: str | None = None) -> "Note":
+        """Parse a note. Tolerates arbitrary Obsidian files.
+
+        A file in someone else's vault may have no frontmatter, or frontmatter
+        missing any field we care about. `fallback_id` (normally the filename
+        stem) supplies id and title when the frontmatter does not.
+        """
         post = frontmatter.loads(md)
-        meta = post.metadata
+        meta = dict(post.metadata or {})
+        body = post.content or ""
+        stem = str(meta.get("id") or fallback_id or "untitled")
+
+        fm_tags = split_frontmatter_tags(meta.get("tags"))
+        tags = list(fm_tags)
+        for tag in extract_inline_tags(body):
+            if tag not in tags:
+                tags.append(tag)
+
+        dates: list[date] = []
+        raw_dates = meta.get("dates") or []
+        if isinstance(raw_dates, str):
+            raw_dates = [raw_dates]
+        for raw in raw_dates:
+            try:
+                dates.append(date.fromisoformat(str(raw)))
+            except ValueError:
+                continue
+
+        try:
+            created = date.fromisoformat(str(meta["created"])) if meta.get("created") else date.today()
+        except ValueError:
+            created = date.today()
+
         return cls(
-            id=meta["id"],
-            collection=meta.get("collection", "inbox"),
-            title=meta.get("title", "Untitled"),
-            body=post.content,
-            signifier=Signifier(meta.get("signifier", "note")),
-            status=Status(meta.get("status", "open")),
-            dates=[date.fromisoformat(d) for d in meta.get("dates", [])],
+            id=stem,
+            collection=str(meta.get("collection") or "inbox"),
+            title=str(meta.get("title") or stem),
+            body=body,
+            signifier=_coerce(Signifier, meta.get("signifier"), Signifier.NOTE),
+            status=_coerce(Status, meta.get("status"), Status.OPEN),
+            dates=dates,
             parent_id=meta.get("parent_id"),
-            created=date.fromisoformat(meta["created"]) if "created" in meta else date.today(),
+            created=created,
             mood=meta.get("mood"),
-            tags=list(meta.get("tags", []) or []),
+            tags=tags,
             recurrence=meta.get("recurrence"),
         )
 

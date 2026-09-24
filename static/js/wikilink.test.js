@@ -11,6 +11,17 @@ test("extracts multiple, including duplicates", () => {
   assert.deepEqual(links, ["One", "Two", "One"]);
 });
 
+test("extractWikilinks returns the target of a piped link, not the display", () => {
+  assert.deepEqual(extractWikilinks("see [[Buying plants|the list]]"), ["Buying plants"]);
+});
+
+test("renderWikilinks shows alias text but links to the target", () => {
+  const html = renderWikilinks("see [[Buying plants|the list]]", ["Buying plants"]);
+  assert.match(html, /data-title="Buying plants"/);
+  assert.match(html, />the list<\/a>/);
+  assert.match(html, /class="wikilink exists"/);
+});
+
 test("empty body → no links", () => {
   assert.deepEqual(extractWikilinks("nothing here"), []);
 });

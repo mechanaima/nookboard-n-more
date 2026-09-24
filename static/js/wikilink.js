@@ -5,16 +5,19 @@ export function extractWikilinks(md) {
   const out = [];
   let m;
   RE.lastIndex = 0;
-  while ((m = RE.exec(md))) out.push(m[1].trim());
+  while ((m = RE.exec(md))) out.push(m[1].split("|")[0].trim());
   return out;
 }
 
 export function renderWikilinks(md, knownTitles /* Set<string>|string[] */) {
   const known = knownTitles instanceof Set ? knownTitles : new Set(knownTitles);
-  return md.replace(RE, (_, title) => {
-    const t = title.trim();
-    const cls = known.has(t) ? "wikilink exists" : "wikilink missing";
-    return `<a class="${cls}" data-title="${escapeAttr(t)}">${escapeHtml(t)}</a>`;
+  return md.replace(RE, (_, raw) => {
+    // Obsidian's [[Target|Display]] -- link goes to Target, text shows Display
+    const [targetPart, displayPart] = raw.split("|");
+    const target = targetPart.trim();
+    const display = (displayPart ?? targetPart).trim();
+    const cls = known.has(target) ? "wikilink exists" : "wikilink missing";
+    return `<a class="${cls}" data-title="${escapeAttr(target)}">${escapeHtml(display)}</a>`;
   });
 }
 

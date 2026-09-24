@@ -17,9 +17,7 @@ from typing import Iterable
 import sqlite3
 
 from .models import Note, Signifier, Status
-
-
-WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+from .obsidian import wikilink_targets
 
 
 SCHEMA = """
@@ -52,7 +50,7 @@ CREATE TABLE IF NOT EXISTS recurrence_state (
 
 
 def _extract_wikilink_titles(body: str) -> list[str]:
-    return [m.strip() for m in WIKILINK_RE.findall(body)]
+    return wikilink_targets(body)
 
 
 class Database:

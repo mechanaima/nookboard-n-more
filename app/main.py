@@ -16,6 +16,7 @@ from .models import Note, Signifier, Status
 from .vault import Vault
 from .db import Database
 from .ics import notes_to_ics
+from .config import Settings, load_settings
 
 
 class NoteIn(BaseModel):
@@ -32,8 +33,9 @@ class NoteIn(BaseModel):
     recurrence: Optional[str] = None
 
 
-def create_app(vault_root: Path | None = None) -> FastAPI:
-    root = Path(vault_root) if vault_root else Path(__file__).resolve().parent.parent / "vault"
+def create_app(vault_root: Path | None = None, settings: Settings | None = None) -> FastAPI:
+    cfg = settings or load_settings()
+    root = Path(vault_root) if vault_root else cfg.vault
     db = Database(root / ".index.sqlite")
     vault = Vault(root, db=db)
 
@@ -46,10 +48,23 @@ def create_app(vault_root: Path | None = None) -> FastAPI:
         vault.write(n)
 
     app = FastAPI(title="nookboard")
+    app.state.settings = cfg
+    app.state.vault = vault
+    app.state.db = db
 
     @app.get("/api/health")
     def health():
         return {"ok": True}
+
+    @app.get("/api/config")
+    def get_config():
+        """What this instance is pointed at. Handy when a vault looks empty."""
+        return {
+            "vault": str(root),
+            "note_count": len(vault.list_all()),
+            "llm_url": cfg.llm_url,
+            "llm_model": cfg.llm_model,
+        }
 
     @app.get("/api/collections")
     def list_collections():
