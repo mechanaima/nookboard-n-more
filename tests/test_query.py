@@ -4,7 +4,10 @@ from datetime import date
 
 import pytest
 
+from fastapi.testclient import TestClient
+
 from app import query, weekly
+from app.main import create_app
 from app.models import Note, Signifier, Status
 
 # 2026-09-21 is the Monday of ISO week 2026-W39; 2026-09-24 is the Thursday.
@@ -372,3 +375,182 @@ def test_find_blocks_reports_where_they_are():
     start, end, text = found[0]
     assert body[start:end].startswith("```nookboard")
     assert text == "days today"
+
+
+# --- `show notes in #tag`, or in a collection -----------------------------
+
+
+def _tagged(nid, title, tags, *, created=THURSDAY, dates=(), collection="journal",
+            signifier=Signifier.NOTE):
+    return Note(
+        id=nid, collection=collection, title=title, body="", tags=list(tags),
+        dates=list(dates), signifier=signifier, status=Status.OPEN, created=created,
+    )
+
+
+def test_show_notes_in_a_tag_is_the_notes_carrying_it():
+    notes = [
+        _tagged("a", "One", ["alpha"]),
+        _tagged("b", "Two", ["beta"]),
+        _tagged("c", "Three", ["alpha", "beta"]),
+    ]
+    out = query.resolve(query.parse("show notes in #alpha"), notes, on=THURSDAY)
+    assert "One" in out and "Three" in out
+    assert "Two" not in out
+
+
+def test_a_tag_is_matched_without_case():
+    """`#ALPHA` and `#alpha` are one tag; nobody remembers which they typed."""
+    notes = [_tagged("a", "One", ["alpha"])]
+    assert "One" in query.resolve(query.parse("show notes in #ALPHA"), notes, on=THURSDAY)
+
+
+def test_show_notes_in_a_collection_reads_exactly_like_naming_it():
+    notes = [
+        _tagged("a", "One", [], collection="journal"),
+        _tagged("b", "Two", [], collection="school"),
+    ]
+    out = query.resolve(query.parse("show notes in school"), notes, on=THURSDAY)
+    assert "Two" in out
+    assert "One" not in out
+
+
+def test_a_tag_this_vault_does_not_have_is_refused_with_the_ones_it_does():
+    """A misspelled tag and an empty one look identical in a note."""
+    notes = [_tagged("a", "One", ["alpha"]), _tagged("b", "Two", ["beta"])]
+    with pytest.raises(query.QueryError) as err:
+        query.resolve(query.parse("show notes in #alfa"), notes, on=THURSDAY)
+    assert "#alpha" in str(err.value) and "#beta" in str(err.value)
+
+
+def test_a_tag_on_a_note_the_default_view_hides_is_still_a_real_tag():
+    """You named the set yourself, so it is answered exactly -- the same rule
+    as naming a collection, which does not second-guess you either."""
+    notes = [
+        _tagged("t", "A shape for other notes", ["shop"], collection="templates"),
+        _tagged("n", "A real note", ["shop"]),
+    ]
+    out = query.resolve(query.parse("show notes in #shop"), notes, on=THURSDAY)
+    assert "A real note" in out
+    assert "A shape for other notes" in out
+
+
+def test_show_notes_alone_is_refused_because_it_is_every_note_you_own():
+    with pytest.raises(query.QueryError) as err:
+        query.parse("show notes")
+    assert "which" in str(err.value)
+
+
+def test_show_needs_the_word_notes():
+    with pytest.raises(query.QueryError):
+        query.parse("show books in #alpha")
+
+
+def test_narrowing_by_a_tag_and_a_collection_at_once_is_refused():
+    """Taking the last `in` would answer a different question than the note asks."""
+    with pytest.raises(query.QueryError) as err:
+        query.parse("show notes in #alpha in school")
+    assert "not both" in str(err.value)
+
+
+def test_a_bare_hash_does_not_name_a_tag():
+    with pytest.raises(query.QueryError) as err:
+        query.parse("show notes in #")
+    assert "#mood" in str(err.value)
+
+
+def _titles(markdown):
+    return [ln.split("[[")[1].rstrip("]") for ln in markdown.splitlines()]
+
+
+def test_newest_first_with_one_days_notes_come_out_by_title():
+    """`created` is a date, so a day's notes tie; the tie-break must be the
+    title ascending, not the whole comparison reversed."""
+    notes = [
+        _tagged("a", "Zebra", ["alpha"], created=MONDAY),
+        _tagged("b", "Apple", ["alpha"], created=MONDAY),
+        _tagged("c", "Newest", ["alpha"], created=SUNDAY),
+    ]
+    out = query.resolve(query.parse("show notes in #alpha"), notes, on=THURSDAY)
+    assert _titles(out) == ["Newest", "Apple", "Zebra"]
+
+
+def test_the_day_a_note_is_about_beats_the_day_it_was_made():
+    """Two journal entries written in one sitting share `created`, so ordering by
+    it alone puts last Monday above last Wednesday and calls that newest-first."""
+    notes = [
+        _tagged("a", "Monday entry", ["alpha"], created=THURSDAY, dates=[MONDAY]),
+        _tagged("b", "Wednesday entry", ["alpha"], created=THURSDAY, dates=[MONDAY.replace(day=23)]),
+    ]
+    out = query.resolve(query.parse("show notes in #alpha"), notes, on=THURSDAY)
+    assert _titles(out) == ["Wednesday entry", "Monday entry"]
+
+
+def test_a_long_list_says_how_many_it_is_not_showing():
+    notes = [_tagged(f"n{i}", f"Note {i:02d}", ["alpha"]) for i in range(query.SHOW_LIMIT + 3)]
+    out = query.resolve(query.parse("show notes in #alpha"), notes, on=THURSDAY)
+    lines = out.splitlines()
+    assert len(lines) == query.SHOW_LIMIT + 1
+    assert "3 more" in lines[-1]
+
+
+def test_a_title_that_cannot_be_a_wikilink_is_listed_without_one():
+    """A wikilink is followed by title, so a bracketed title would link elsewhere."""
+    notes = [_tagged("a", "A [draft] title", ["alpha"])]
+    out = query.resolve(query.parse("show notes in #alpha"), notes, on=THURSDAY)
+    assert "[[" not in out
+    assert "A [draft] title" in out
+
+
+def test_an_empty_answer_says_so_rather_than_rendering_nothing():
+    """A blank line where an answer belongs reads as a query that failed.
+
+    Called directly because the parser cannot reach this today -- a tag that
+    exists has notes, and a collection exists because a note is in it -- but the
+    wording is what a person reads if either rule ever loosens, and "nothing" is
+    a *different fact* from the refusal beside it.
+    """
+    out = query._show_markdown([], query.parse("show notes in #alpha"))
+    assert out == "_Nothing in #alpha._"
+
+
+def test_the_query_says_what_you_can_write():
+    with pytest.raises(query.QueryError) as err:
+        query.parse("show notes sideways")
+    assert "show notes in #mood" in str(err.value)
+
+
+# --- the same thing over HTTP --------------------------------------------
+
+
+@pytest.fixture
+def vault(tmp_path):
+    root = tmp_path / "vault"
+    root.mkdir()
+    with TestClient(create_app(vault_root=root)) as client:
+        yield client
+
+
+def _add(vault, nid, collection, title, tags=()):
+    resp = vault.post("/api/notes", json={
+        "id": nid, "collection": collection, "title": title, "body": "",
+        "signifier": "note", "status": "open", "tags": list(tags),
+    })
+    assert resp.status_code in (200, 201), resp.text
+
+
+def test_a_tag_query_over_the_api(vault):
+    """`q` is the whole contract with the browser: it sends the fence's text and
+    gets markdown back, so the client never learns a second syntax."""
+    _add(vault, "q-one", "journal", "Tagged one", ["alpha"])
+    _add(vault, "q-two", "journal", "Not tagged", ["beta"])
+    body = vault.get("/api/query", params={"q": "show notes in #alpha"}).json()
+    assert body["query"] == "show notes in #alpha"
+    assert "Tagged one" in body["markdown"]
+    assert "Not tagged" not in body["markdown"]
+
+
+def test_a_refusal_is_a_sentence_over_the_api_too(vault):
+    body = vault.get("/api/query", params={"q": "show notes in #nope"}).json()
+    assert "Query not understood" in body["markdown"]
+    assert "no `#nope` tag" in body["markdown"]

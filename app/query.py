@@ -39,7 +39,16 @@ NAMED_PERIODS = (
 #: Shown when a query cannot be understood. A query that silently renders
 #: nothing is worse than one that says it did not follow you -- you would go on
 #: believing the note was empty rather than that the query was wrong.
-EXPECTED = "`completed this week`, `days this week`, or `open tasks`"
+EXPECTED = (
+    "`completed this week`, `days this week`, `open tasks`, or `show notes in #mood`"
+)
+
+
+#: How many tags a refusal names before it says how many it is not naming.
+TAG_LIST_LIMIT = 12
+
+#: A query answers with a list, and a list of two hundred is not an answer.
+SHOW_LIMIT = 25
 
 
 class QueryError(ValueError):
@@ -53,9 +62,10 @@ ISO_WEEK_RE = re.compile(r"(?i)^\d{4}-W\d{1,2}$")
 
 @dataclass(frozen=True)
 class Query:
-    verb: str                          # "days" | "completed" | "open"
+    verb: str                          # "days" | "completed" | "open" | "show"
     period: Optional[str] = None
     collection: Optional[str] = None   # narrow to one collection by name
+    tag: Optional[str] = None          # narrow to the notes carrying one tag
     source: str = ""
 
 
@@ -97,6 +107,47 @@ def parse(text: str) -> Query:
                 "`open tasks in work`"
             )
         return Query(verb="open", collection=match.group(1).strip(), source=source)
+
+    # `show` lists notes rather than work, and says which ones: a tag or a
+    # collection. It has no default, deliberately -- `show notes` on its own is
+    # every note you own, which is not an answer to anything.
+    if raw == "show" or raw.startswith("show "):
+        rest = source[len("show") :].strip()
+        if rest[:5].lower() != "notes":
+            raise QueryError(
+                f"don't know how to read `{source}` — try `show notes in #mood` "
+                "or `show notes in journal`"
+            )
+        rest = rest[5:].strip()
+        if not rest:
+            raise QueryError(
+                "`show notes` needs to know which — `show notes in #mood` for a "
+                "tag, or `show notes in journal` for a collection"
+            )
+        if not rest[:2].lower() == "in" or rest[2:3].strip():
+            raise QueryError(
+                f"don't know how to read `{source}` — try `show notes in #mood` "
+                "or `show notes in journal`"
+            )
+        scope = rest[2:].strip()
+        if not scope:
+            raise QueryError(
+                "`show notes in` needs a tag or a collection after it"
+            )
+        if re.search(r"(?i)\s+in\s+\S", scope):
+            raise QueryError(
+                "a query can narrow by a tag or by a collection, not both yet — "
+                "`show notes in #mood` or `show notes in journal`"
+            )
+        if scope.startswith("#"):
+            tag = scope[1:].strip()
+            if not tag:
+                raise QueryError(
+                    "`#` on its own does not name a tag — that looks like "
+                    "`show notes in #mood`"
+                )
+            return Query(verb="show", tag=tag, source=source)
+        return Query(verb="show", collection=scope, source=source)
 
     for verb in ("days", "completed"):
         if raw == verb:
@@ -201,6 +252,8 @@ def resolve(query: Query, notes: Sequence[Note], *, on: date) -> str:
 
     if query.verb == "open":
         return _open_markdown(pool)
+    if query.verb == "show":
+        return _show_markdown(pool, query)
     if query.verb != "completed":
         raise QueryError(f"don't know how to read `{query.source}` — {EXPECTED}")
 
@@ -211,12 +264,12 @@ def resolve(query: Query, notes: Sequence[Note], *, on: date) -> str:
         # Said, not left blank: an empty gap looks like a query that failed.
         return f"_Nothing finished {_span_label(query, start, end)}._"
     if single:
-        return "\n".join(f"- [[{n.title}]]" for n in done_by_day[start])
+        return "\n".join(f"- {_link(n)}" for n in done_by_day[start])
     # Same shape as the weekly rollup's Finished list, so a query block and the
     # generated note above it read alike instead of looking like two features.
     lines = []
     for day in sorted(done_by_day):
-        titles = ", ".join(f"[[{n.title}]]" for n in done_by_day[day])
+        titles = ", ".join(_link(n) for n in done_by_day[day])
         lines.append(f"- **{day.strftime('%a')} {day.day}** \u2014 {titles}")
     return "\n".join(lines)
 
@@ -232,6 +285,8 @@ def _pool(query: Query, notes: Sequence[Note]) -> list[Note]:
     """
     if query.collection:
         return _named(notes, query.collection)
+    if query.tag:
+        return _tagged(notes, query.tag)
     return [n for n in notes if is_work(n)]
 
 
@@ -250,6 +305,77 @@ def _named(notes: Sequence[Note], wanted: str) -> list[Note]:
         raise QueryError(f"there is no `{wanted}` collection — this vault has none")
     listed = ", ".join(f"`{name}`" for name in known)
     raise QueryError(f"there is no `{wanted}` collection — you have {listed}")
+
+
+def _tagged(notes: Sequence[Note], wanted: str) -> list[Note]:
+    """The notes carrying one tag, refusing a tag this vault does not have.
+
+    Matched case-insensitively but spelled the way the note spells it. A tag
+    that exists *anywhere* counts as existing, even on a note the default view
+    leaves out: you wrote the tag, so the tag is real, and the refusal is only
+    ever about a name this vault does not have at all.
+
+    Answered exactly like a named collection, and for the same reason -- you
+    named the set yourself, so nothing about it is second-guessed.
+    """
+    wanted_low = wanted.lower()
+    known = sorted({t for n in notes for t in n.tags}, key=str.lower)
+    if not any(wanted_low == t.lower() for t in known):
+        if not known:
+            raise QueryError(f"there is no `#{wanted}` tag — this vault has none")
+        shown = ", ".join(f"`#{t}`" for t in known[:TAG_LIST_LIMIT])
+        rest = len(known) - TAG_LIST_LIMIT
+        more = f" and {rest} more" if rest > 0 else ""
+        raise QueryError(f"there is no `#{wanted}` tag — you have {shown}{more}")
+    return [n for n in notes if any(wanted_low == t.lower() for t in n.tags)]
+
+
+def _link(note: Note) -> str:
+    """A note as a wikilink, or as plain text when a link cannot address it.
+
+    A title holding `[`, `]` or a newline would end the link early, and a
+    wikilink is followed by *title*, so a title that cannot be written as one
+    is listed unlinked rather than as a link to something else.
+    """
+    title = (note.title or "").strip() or note.id
+    if any(ch in title for ch in "[]\n"):
+        return title
+    return f"[[{title}]]"
+
+
+def _recency(note: Note) -> date:
+    """The day a note is from: the day it is about, else the day it was made.
+
+    Not `created` alone. `created` is a `date`, so every note written in one
+    sitting ties on it -- and a tag of today's notes would then come out in
+    title order while calling itself newest-first. A note's own first date is
+    the day a person means, and it is the same field the query layer already
+    treats as "the day this note is about".
+    """
+    if note.dates and note.dates[0]:
+        return note.dates[0]
+    return note.created or date.min
+
+
+def _show_markdown(notes: Sequence[Note], query: Query) -> str:
+    """The notes a `show` asked for: newest first, and the count said out loud.
+
+    Newest first, because a tag is usually a thread you are still adding to.
+    Ordered on the server like every other ordering here, in two stable passes
+    so the tie-break among one day's notes is the title ascending rather than
+    the whole comparison reversed.
+    """
+    label = f"in #{query.tag}" if query.tag else f"in {query.collection}"
+    if not notes:
+        return f"_Nothing {label}._"
+    ordered = sorted(notes, key=lambda n: (n.title or "").lower())
+    ordered.sort(key=_recency, reverse=True)
+    lines = [f"- {_link(n)}" for n in ordered[:SHOW_LIMIT]]
+    rest = len(ordered) - SHOW_LIMIT
+    if rest > 0:
+        # A short list that does not say it is short reads as the whole set.
+        lines.append(f"- _{rest} more — showing the {SHOW_LIMIT} most recent._")
+    return "\n".join(lines)
 
 
 def _span_label(query: Query, start: date, end: date) -> str:
@@ -287,7 +413,7 @@ def _open_markdown(notes: Sequence[Note]) -> str:
     if not open_tasks:
         return "_Nothing open._"
     open_tasks.sort(key=lambda n: (n.title.lower(), n.id))
-    return "\n".join(f"- [[{n.title}]]" for n in open_tasks)
+    return "\n".join(f"- {_link(n)}" for n in open_tasks)
 
 
 def render(text: str, notes: Sequence[Note], *, on: date) -> str:

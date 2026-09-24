@@ -568,6 +568,8 @@ completed this week
 | `open tasks` | everything still open, linked |
 | `open tasks in work` | the same, for one collection |
 | `completed this week in work` | what was finished in one collection |
+| `show notes in #mood` | the notes carrying that tag, newest first, linked |
+| `show notes in journal` | the notes in one collection, newest first, linked |
 
 Periods: `today`, `yesterday`, `this week`, `last week`, `this month`,
 `last month`, `on <YYYY-MM-DD>`, `in <YYYY-Www>`. Either period-taking verb
@@ -582,6 +584,14 @@ takes any period.
   the query rather than a list that was true when it was written.
 - **What counts as finished** is `daily.completed_on` — the same rule the daily
   and weekly notes use, so a query and a generated note cannot disagree.
+- **`#` is what makes it a tag.** `show notes in mood` and `show notes in #mood`
+  are different questions — one collection, one tag — and a name the vault does
+  not have is refused with the ones it does, because a misspelled tag and an
+  empty one look identical in a note. `show notes` on its own is every note you
+  own, which is not an answer, so it says what to write instead.
+- **Newest means the day the note is about**, not the day the file was made:
+  `created` is a date, so a whole sitting's notes tie on it. A list longer than
+  25 says how many it is not showing, rather than looking like the whole set.
 - **A fence you have not closed yet is left alone.** Mid-typing a query is not
   yet a query, and this is also how you write *about* a query in a note rather
   than running it. A fence in any other language is never touched.

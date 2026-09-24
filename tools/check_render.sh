@@ -63,7 +63,7 @@ trap cleanup EXIT
 # The fixture is dated 2026-09-25, so `this week` is the fixed ISO week
 # 2026-09-21..27 whatever day this check happens to run: the query assertions
 # depend on the note's own date, not on the clock, and not on the vault.
-BODY='Soil mix:\n\n- **60 percent** potting mix\n- 30 percent perlite\n\n> dry out between waterings\n\nsee [[Render Check Target]] and `soil.md`\n\n## Days\n\n```nookboard\ndays this week\n```\n\n## Finished\n\n```nookboard\ncompleted this week\n```' 
+BODY='Soil mix:\n\n- **60 percent** potting mix\n- 30 percent perlite\n\n> dry out between waterings\n\nsee [[Render Check Target]] and `soil.md`\n\n## Days\n\n```nookboard\ndays this week\n```\n\n## Finished\n\n```nookboard\ncompleted this week\n```\n\n## Tagged\n\n```nookboard\nshow notes in #fixture\n```' 
 
 curl -sf -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/json' -d "{
   \"id\": \"$TARGET_ID\", \"collection\": \"inbox\", \"title\": \"Render Check Target\",
@@ -172,6 +172,7 @@ check "preview: list rendered"        '<ul>'
 check "preview: blockquote rendered"  '<blockquote>'
 check "preview: wikilink resolved"    'class="wikilink exists"'
 check "preview: query resolved to a linked day" 'class="wikilink[^"]*"[^>]*>2026-09-21</a>'
+check "preview: a tag query resolved to the note carrying the tag" 'class="wikilink[^"]*"[^>]*>Render Check</a>'
 check_gone "preview: query not left as a code block" 'language-nookboard'
 check "preview: inline code"          '<code>soil.md</code>'
 
