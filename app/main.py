@@ -30,6 +30,7 @@ from . import home
 from . import insight
 from . import mood as moodlib
 from . import query as querylib
+from . import schedule
 from . import templates
 from . import weekly
 from .vault import Vault
@@ -51,6 +52,9 @@ class NoteIn(BaseModel):
     signifier: Signifier = Signifier.NOTE
     status: Status = Status.OPEN
     dates: list[date] = Field(default_factory=list)
+    #: "HH:MM". A note with a time names an instant -- see `app.schedule`.
+    at: Optional[str] = None
+    until: Optional[str] = None
     parent_id: Optional[str] = None
     mood: Optional[str] = None
     pain: Optional[int] = None
@@ -385,6 +389,22 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         notes = vault.list_all()
         return notes, index_by_id(notes)
 
+    def _coerce_time(value: object, field: str) -> Optional[str]:
+        """A time, or a refusal.
+
+        Reads are forgiving on purpose -- a foreign file with `at: noon` opens as an
+        untimed note rather than failing to open at all. A *write* is not: silently
+        dropping a time somebody just typed would leave a note that looks scheduled
+        and is not, which is the one outcome worse than an error message.
+        """
+        if value is None or value == "":
+            return None
+        parsed = schedule.parse_time(value)
+        if parsed is None:
+            raise HTTPException(400, f"{field} is not a time (write it like 14:30)")
+        return parsed
+
+
     def _coerce_enum(enum_cls, value, field):
         try:
             return enum_cls(value)
@@ -435,6 +455,8 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             signifier=payload.signifier,
             status=status,
             dates=payload.dates,
+            at=_coerce_time(payload.at, "at"),
+            until=_coerce_time(payload.until, "until"),
             parent_id=payload.parent_id,
             mood=payload.mood,
             pain=coerce_pain(payload.pain),
@@ -483,6 +505,8 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             ),
             status=status,
             dates=new_dates,
+            at=_coerce_time(payload.get("at", existing.at), "at"),
+            until=_coerce_time(payload.get("until", existing.until), "until"),
             parent_id=payload.get("parent_id", existing.parent_id),
             # `.get(..., existing)` so an absent key keeps the value while an
             # explicit null clears it — the API could always express "no mood",

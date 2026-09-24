@@ -70,9 +70,10 @@ Three things about that are not obvious, and are worth not breaking:
   twice drifts; two buttons that meant the same thing already had.
 
 The whole visual layer is one hand-written stylesheet —
-`static/css/app.css`, 17 numbered sections (tokens → reset → typography →
+`static/css/app.css`, 19 numbered sections (tokens → reset → typography →
 topbar → sidebar → entries → editor → controls → markdown → calendar → empty
-state → motion → board → mood → responsive → templates → dashboard). There is
+state → motion → board → mood → responsive → templates → dashboard →
+transcribe → times). There is
 **no framework, no build step, and no CDN**; `marked` is vendored into
 `static/vendor/`.
 
@@ -165,6 +166,10 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
 - **Backlinks** — every note shows a panel of notes that link to it
 - **Recurring notes** — daily/weekly/monthly cadence, instances auto-created on startup
 - **Vault export** — `GET /api/export.zip` — single zip of all `.md` files
+- **Times** — a note can name an instant, not just a day: `at: 14:30`,
+  `until: 16:00`. It shows on the calendar, exports as a real timed event, and a
+  user timer pops a desktop notification when the time arrives
+  (see [Times and reminders](#times-and-reminders))
 - **ICS subscription** — `GET /api/calendar.ics` — external calendar apps subscribe
 - **Obsidian interop** — the vault is a valid Obsidian vault; point nookboard at
   any Markdown folder with `NOOKBOARD_VAULT` (see [Obsidian](#obsidian))
@@ -630,6 +635,48 @@ NOOKBOARD_WHISPER_MODEL   model to use by default (default: small)
 Models looked for: `ggml-small.bin` and `ggml-medium.bin`. If nothing is found,
 the endpoint says which variable fixes it instead of failing anonymously.
 
+## Times and reminders
+
+A date says which day. A time says *when* — and the things worth being told about
+happen at a time: a lecture at 11:20, a call at 14:30.
+
+```yaml
+dates: [2026-09-25]   # which day
+at: 14:30             # when, on that day: 24-hour "HH:MM". Names an instant
+until: 16:00          # optional; an hour later if you leave it empty
+```
+
+On the task screen a **time** row sits right under the dates: two clock fields and
+a ✕ that clears both. Under it, one line says what the app will do with what you
+typed — `fires at 14:30`, or, if you set a time and no date, that **a time on its
+own names no instant, so nothing will fire**. The rule is said before you save
+rather than discovered afterwards.
+
+- **The calendar** shows the time on the day's entry, not just a count.
+- **The ICS feed** exports a timed note as a real timed event, so an external
+  calendar puts it where it belongs on the grid instead of as an all-day banner.
+- **The board** shows it as a chip beside the date, so a card you scan says when.
+
+### The popup
+
+`tools/notify-events.py` reads the vault **with the app's own parser** — one
+implementation of what a time means, shared with the calendar and the feed — and
+pops a desktop notification through `notify-send` / `dunstify` when a note's time
+arrives. Each occurrence is announced **once** (a ledger at
+`~/.local/state/nookboard/notified.json`), and lateness is said rather than
+hidden: the popup for a 09:00 note first seen at 09:40 tells you it is late.
+
+```bash
+./tools/notify-events.py --dry-run        # say what would fire, send nothing
+./tools/install-events-timer.sh           # install + start a user timer
+journalctl --user -u nookboard-events.service -f   # watch it work
+./tools/install-events-timer.sh --remove  # stop and delete the units
+```
+
+It is a **user** timer, not a system service: no root, and it reads the same vault
+the app does. Re-run the installer after moving the checkout — it rewrites the
+paths rather than making you hand-edit unit files.
+
 ## API
 
 - `GET    /api/health`
@@ -753,6 +800,8 @@ an older build still works instead of raising on every read.
 A task note's frontmatter carries its board state:
 
 ```yaml
+at: 14:30             # optional; "HH:MM" 24h. Names an instant, not a day
+until: 16:00          # optional; an hour later if empty
 stage: doing          # backlog | todo | doing | review | done
 blocked_by: [outline] # ids of the notes it waits on
 position: 2.0         # order within its column
@@ -835,7 +884,7 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 500 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 553 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),
@@ -846,16 +895,20 @@ make test        # 500 pytest — model, vault, obsidian, foreign-vault, db, api
                  #              transcript (the whisper report, the ffprobe
                  #              JSON, paragraph grouping, the fence, finding the
                  #              tools), summary (chunking, prompts, the reply's
-                 #              shape), transcribe API (the endpoints)
-make test-js     # 147 node:test — rapid-log parsing, calendar maths, wikilinks,
+                 #              shape), transcribe API (the endpoints),
+                 #              schedule (what a time means: parsing, labels,
+                 #              lateness, the YAML shapes a hand-written file
+                 #              can hold)
+make test-js     # 153 node:test — rapid-log parsing, calendar maths, wikilinks,
                  #              ISO week labels, display helpers, board helpers,
                  #              mood grid helpers, query fences (finding them,
                  #              splicing answers, leaving other languages alone),
                  #              transcribe wording (states, progress, durations,
-                 #              the recorder's types), and that every local
+                 #              the recorder's types), the editor's time wording (a time
+                 #              with no date fires nothing), and that every local
                  #              import exists
 make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
-./tools/check_render.sh   # 118 DOM assertions in headless Chromium
+./tools/check_render.sh   # 123 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether

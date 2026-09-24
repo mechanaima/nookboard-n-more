@@ -2,6 +2,7 @@
 import { parseRapidInput } from "./rapid.js";
 import { monthGrid, shiftMonth } from "./calendar.js";
 import { extractWikilinks, renderWikilinks } from "./wikilink.js";
+import { timeHint } from "./schedule.js";
 import { weekKey } from "./week.js";
 import {
   BOARD_TILES, clockTime, greeting, longDate, statTiles, todayAction, todayLine,
@@ -26,9 +27,26 @@ import {
 
 // Parse a JSON response, turning FastAPI's `detail` into a real Error so a
 // refused move (a dependency cycle) can be shown instead of swallowed.
+const JSON_HEADERS = { "Content-Type": "application/json" };
+
 async function jsonOrThrow(resp) {
+  // Read the body as text first. `resp.json()` on a body that is not JSON
+  // throws "Unexpected token 'I', "Internal Server Error" is not valid JSON" —
+  // which reaches the person as a save that failed for no stated reason. A
+  // server that has just restarted answers exactly that, so this is a real
+  // failure mode and not a hypothetical one.
+  const text = await resp.text();
   let body = null;
-  try { body = await resp.json(); } catch { /* empty body is fine for 204 */ }
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new Error(
+        `the server answered ${resp.status} with something that is not JSON ` +
+        `(${text.trim().slice(0, 80)}) — if it just restarted, try again`
+      );
+    }
+  }
   if (!resp.ok) {
     const detail = body && body.detail;
     const message = Array.isArray(detail)
@@ -39,29 +57,31 @@ async function jsonOrThrow(resp) {
   return body;
 }
 
-const JSON_HEADERS = { "Content-Type": "application/json" };
-
 const api = {
-  async listNotes()      { return (await fetch("/api/notes")).json(); },
-  async listCollections(){ return (await fetch("/api/collections")).json(); },
+  // Every one of these goes through jsonOrThrow. Saving a note touches
+  // `updateNote` and then `listNotes`, so a server that answers with anything
+  // but JSON has to produce a sentence about the *server*, not about a
+  // character it did not expect.
+  async listNotes()      { return jsonOrThrow(await fetch("/api/notes")); },
+  async listCollections(){ return jsonOrThrow(await fetch("/api/collections")); },
   async createNote(n)    {
-    return (await fetch("/api/notes", {
+    return jsonOrThrow(await fetch("/api/notes", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: JSON_HEADERS,
       body: JSON.stringify(n),
-    })).json();
+    }));
   },
   async updateNote(id, p) {
-    return (await fetch(`/api/notes/${encodeURIComponent(id)}`, {
+    return jsonOrThrow(await fetch(`/api/notes/${encodeURIComponent(id)}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: JSON_HEADERS,
       body: JSON.stringify(p),
-    })).json();
+    }));
   },
   async deleteNote(id)   { return await fetch(`/api/notes/${encodeURIComponent(id)}`, { method: "DELETE" }); },
-  async search(q)        { return (await fetch(`/api/search?q=${encodeURIComponent(q)}`)).json(); },
-  async calendar(y, m)   { return (await fetch(`/api/calendar/${y}/${m}`)).json(); },
-  async backlinks(id)    { return (await fetch(`/api/notes/${encodeURIComponent(id)}/backlinks`)).json(); },
+  async search(q)        { return jsonOrThrow(await fetch(`/api/search?q=${encodeURIComponent(q)}`)); },
+  async calendar(y, m)   { return jsonOrThrow(await fetch(`/api/calendar/${y}/${m}`)); },
+  async backlinks(id)    { return jsonOrThrow(await fetch(`/api/notes/${encodeURIComponent(id)}/backlinks`)); },
 
   // -- the dashboard
   async home(month) {
@@ -336,6 +356,12 @@ function buildEntry(note, opts = {}) {
     dc.textContent = friendlyDate(note.dates[0], todayIso());
     meta.appendChild(dc);
   }
+  if (opts.showDate !== false && note.time_label) {
+    const tc = document.createElement("span");
+    tc.className = "date-chip date-chip--time";
+    tc.textContent = note.time_label;
+    meta.appendChild(tc);
+  }
   if (meta.childElementCount) main.appendChild(meta);
   li.appendChild(main);
 
@@ -465,6 +491,10 @@ function renderEditor() {
   $("#note-status").value = n.status;
   $("#note-stage").value = n.stage || "todo";
   $("#note-dates").value = (n.dates || []).join(", ");
+  // `type="time"` speaks exactly our format: `HH:MM`, 24-hour, or empty.
+  $("#note-at").value = n.at || "";
+  $("#note-until").value = n.until || "";
+  renderTimeHint();
   state.activeTags = (n.tags || []).slice();
   $("#note-tags-input").value = "";
   $("#note-recurrence").value = n.recurrence || "";
@@ -722,6 +752,10 @@ async function saveEditor() {
       stage: nextStage,
       collection: $("#note-collection").value,
       dates,
+      // Empty string means "no time": the server takes null as a clear and
+      // refuses anything it cannot read, so a typo cannot be swallowed.
+      at: $("#note-at").value || null,
+      until: $("#note-until").value || null,
       tags,
       mood: state.activeMood || null,
       // Explicit null when unset, so clearing a reading actually clears it
@@ -973,11 +1007,28 @@ function renderBoardCollectionFilter() {
   sel.innerHTML = options.join("");
 }
 
-function chip(text) {
+function chip(text, extraClass) {
   const span = document.createElement("span");
-  span.className = "card__chip";
+  span.className = extraClass ? `card__chip ${extraClass}` : "card__chip";
   span.textContent = text;
   return span;
+}
+
+// The time as the server spelled it, beside the date it belongs to. The client
+// never reassembles a range: that is `time_label`'s job, and one layer deciding
+// is how `9:05` in a file stays `09:05` here.
+function timeChip(note) {
+  if (!note || !note.time_label) return null;
+  return chip(note.time_label, "card__chip--time");
+}
+
+// Say what the time will do, including the case where it will do nothing.
+function renderTimeHint() {
+  const hint = $("#note-time-hint");
+  if (!hint) return;
+  const days = splitList($("#note-dates").value).length;
+  hint.textContent = timeHint($("#note-at").value, days);
+  hint.classList.toggle("field-hint--warn", Boolean($("#note-at").value) && !days);
 }
 
 function buildColumn(col) {
@@ -1042,6 +1093,8 @@ function buildCard(card, stage) {
   if (card.collection && card.collection !== "inbox") meta.appendChild(chip(card.collection));
   for (const t of (card.tags || []).slice(0, 3)) meta.appendChild(chip("#" + t));
   if (card.dates?.length) meta.appendChild(chip(friendlyDate(card.dates[0], todayIso())));
+  const when = timeChip(card);
+  if (when) meta.appendChild(when);
   if (meta.childElementCount) li.appendChild(meta);
 
   // Why it is stuck. The label is built with textContent — note titles are the
@@ -2714,6 +2767,17 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   $("#note-tags-input").addEventListener("blur", commitTagInput);
   $("#tag-input").addEventListener("click", () => $("#note-tags-input").focus());
+
+  // The hint follows both halves of the rule, so it listens to the dates too: a
+  // time you just typed is fine until the last date is deleted under it.
+  $("#note-at").addEventListener("input", renderTimeHint);
+  $("#note-until").addEventListener("input", renderTimeHint);
+  $("#note-dates").addEventListener("input", renderTimeHint);
+  $("#note-time-clear").addEventListener("click", () => {
+    $("#note-at").value = "";
+    $("#note-until").value = "";
+    renderTimeHint();
+  });
 
   // local ai
   $("#ai-summarize").addEventListener("click", () => {

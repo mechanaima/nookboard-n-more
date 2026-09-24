@@ -441,6 +441,20 @@
             <input id="note-dates" placeholder="2026-09-23, 2026-09-30">
           </label>
           <div class="field field--wide">
+            <span class="field-label">time</span>
+            <div class="time-row">
+              <input id="note-at" type="time" class="time-row__field"
+                     aria-label="starts at" title="when it starts">
+              <span class="time-row__dash" aria-hidden="true">–</span>
+              <input id="note-until" type="time" class="time-row__field"
+                     aria-label="ends at" title="when it ends — an hour later if left empty">
+              <button id="note-time-clear" class="time-row__clear" type="button"
+                      aria-label="remove the time" title="remove the time">✕</button>
+            </div>
+            <!-- the one rule nobody can guess: see static/js/schedule.js -->
+            <p id="note-time-hint" class="field-hint"></p>
+          </div>
+          <div class="field field--wide">
             <span class="field-label">tags</span>
             <div id="tag-input" class="tag-input">
               <span id="tag-chips" class="tag-chips"></span>

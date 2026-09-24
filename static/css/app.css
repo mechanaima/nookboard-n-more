@@ -2747,6 +2747,50 @@ textarea { resize: vertical; line-height: 1.6; }
 .tr-empty { margin: 0; font-size: 12.5px; color: var(--fg-faint); }
 .tr-empty.hidden { display: none; }
 
+/* 19. times ---------------------------------------------------------------- */
+/* A note with a time names an *instant* rather than a day (app/schedule.py). On
+   the form that is a start, an optional end, and one line that says what the
+   time will do -- including the case where it will do nothing, because "a time
+   with no date will not fire" is the one thing here nobody can guess by looking
+   at it. */
+
+.time-row { display: flex; align-items: center; gap: 8px; }
+.time-row__field { flex: 1 1 0; min-width: 0; }
+/* The dark-native clock widget: without this the picker renders light-on-dark. */
+.time-row input[type="time"] { color-scheme: dark; font-family: var(--font-mono); }
+.time-row__dash { color: var(--fg-faint); font-family: var(--font-mono); }
+
+.time-row__clear {
+  flex: 0 0 auto;
+  width: 28px; height: 32px; line-height: 1;
+  border: 1px solid color-mix(in srgb, var(--surface1) 90%, transparent);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+.time-row__clear:hover { color: var(--fg); border-color: var(--line); }
+
+.field-hint {
+  margin: 6px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-faint);
+  min-height: 13px; /* the row does not jump when the hint appears */
+}
+/* A time that will not fire says so in a colour that is read, not skimmed. */
+.field-hint--warn { color: var(--peach); }
+
+/* A time reads as a time and not as another tag. */
+.card__chip--time {
+  color: var(--sky);
+  border-color: color-mix(in srgb, var(--sky) 34%, transparent);
+}
+/* The entry row pushes one chip right; a time belongs beside its date, so it
+   must not claim that gap for itself. */
+.date-chip--time { margin-left: 0; padding-left: 8px; color: var(--sky); }
+
 /* 15. responsive ---------------------------------------------------------- */
 @media (max-width: 1320px) {
   /* The board needs room for five columns; shrink the editor rather than

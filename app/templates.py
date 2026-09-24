@@ -134,6 +134,11 @@ def build_note(
         # Dated the day it is made, like a note captured any other way, so it
         # shows up on that day rather than nowhere.
         dates=[day],
+        # The time carries over the way the tags and the signifier do: a standup
+        # template is *at* 09:00, and that is most of the reason to have one.
+        # What does not carry over is state -- a new note starts open.
+        at=template.at,
+        until=template.until,
         tags=list(template.tags),
         created=day,
     )

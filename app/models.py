@@ -21,6 +21,10 @@ import re
 import frontmatter
 
 from .obsidian import extract_inline_tags, split_frontmatter_tags
+# `schedule` imports Note only for typing (behind TYPE_CHECKING), so this is not
+# a cycle. One parser for a time, used by the model and by the ICS feed alike.
+from .schedule import label as schedule_label
+from .schedule import parse_time, raw_time_from_frontmatter
 
 
 class Signifier(str, Enum):
@@ -274,6 +278,17 @@ class Note:
     signifier: Signifier = Signifier.NOTE
     status: Status = Status.OPEN
     dates: list[date] = field(default_factory=list)
+    #: Time of day, "HH:MM" in 24h, for a note that names an *instant* and not
+    #: just a day -- an appointment, a class, a call. None means the note
+    #: belongs to the whole of each of its dates, which is what every note was
+    #: before this field existed, and is still what most notes are.
+    at: Optional[str] = None
+    #: When a timed note ends, "HH:MM". None means `schedule.DEFAULT_DURATION`.
+    #: Kept as a clock time and not a duration so it reads the way a timetable
+    #: does -- "14:30 until 16:00" -- and so a wrong end is visibly wrong
+    #: rather than a number someone has to add up. An end at or before the
+    #: start crosses midnight.
+    until: Optional[str] = None
     parent_id: Optional[str] = None
     created: date = field(default_factory=date.today)
     mood: Optional[str] = None
@@ -314,6 +329,11 @@ class Note:
             "signifier": self.signifier.value,
             "status": self.status.value,
             "dates": [d.isoformat() for d in self.dates],
+            # Normalized, and zero-padded on purpose: `14:30` written plain is
+            # base-60 to a YAML loader, while `09:05`/`14:30` stay strings. The
+            # app's own files must never be the ambiguous form.
+            "at": parse_time(self.at),
+            "until": parse_time(self.until),
             "parent_id": self.parent_id,
             "created": self.created.isoformat(),
             "mood": self.mood,
@@ -361,6 +381,16 @@ class Note:
             except ValueError:
                 continue
 
+        # The raw frontmatter text first: YAML turns an unquoted `14:30` into
+        # 870 and an unquoted `0930` into 930, two different times that cannot
+        # be told apart once parsed. The text is the truth when we can read it.
+        # A time we cannot read at all is dropped rather than rounded or
+        # refused: a note with a typo in `at:` still opens, and `schedule` then
+        # treats it as untimed. Scheduling the wrong hour would be worse than
+        # not scheduling.
+        at = parse_time(raw_time_from_frontmatter(md, "at") or meta.get("at"))
+        until = parse_time(raw_time_from_frontmatter(md, "until") or meta.get("until"))
+
         try:
             created = date.fromisoformat(str(meta["created"])) if meta.get("created") else date.today()
         except ValueError:
@@ -402,6 +432,8 @@ class Note:
             signifier=_coerce(Signifier, meta.get("signifier"), Signifier.NOTE),
             status=_coerce(Status, meta.get("status"), Status.OPEN),
             dates=dates,
+            at=at,
+            until=until,
             parent_id=meta.get("parent_id"),
             created=created,
             mood=meta.get("mood"),
@@ -423,6 +455,12 @@ class Note:
         # this rule (and cannot get it subtly wrong).
         d["stage"] = self.stage or stage_for_status(self.status).value
         d["dates"] = [x.isoformat() for x in self.dates]
+        # The normalized time, not the raw frontmatter: `9:05` in the file is
+        # `09:05` everywhere the client sees it, and `label` is the display
+        # spelling so no client has to reassemble a range.
+        d["at"] = parse_time(self.at)
+        d["until"] = parse_time(self.until)
+        d["time_label"] = schedule_label(self)
         d["created"] = self.created.isoformat()
         # asdict() leaves these as date objects, which are not JSON.
         d["completed"] = self.completed.isoformat() if self.completed else None

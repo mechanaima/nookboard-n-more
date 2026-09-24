@@ -53,7 +53,8 @@ curl -sf -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/js
 curl -sf -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/json' -d "{
   \"id\": \"$NOTE_ID\", \"collection\": \"inbox\", \"title\": \"Render Check\",
   \"body\": \"$BODY\", \"signifier\": \"task\", \"status\": \"open\",
-  \"dates\": [\"2026-09-25\"], \"tags\": [\"fixture\"], \"mood\": \"good\"
+  \"dates\": [\"2026-09-25\"], \"tags\": [\"fixture\"], \"mood\": \"good\",
+  \"at\": \"09:15\", \"until\": \"10:30\"
 }" || { echo "!! could not seed fixture" >&2; exit 1; }
 
 # Board fixtures: one open blocker, one task waiting on it, one in Doing.
@@ -128,6 +129,12 @@ check "tag chip from fixture"         'tag-chip--removable[^>]*>fixture|>fixture
 check "mood buttons present"          'data-mood="great"'
 check "mood value label filled"       'id="mood-value"[^>]*>[^<]+<'
 
+# the time row: the input a person sets, and the line that says what it will do
+check "time starts-at input present"  'id="note-at"[^>]*type="time"'
+check "time ends-at input present"    'id="note-until"[^>]*type="time"'
+check "time clear button present"     'id="note-time-clear"'
+check "time hint says when it fires"  'id="note-time-hint"[^>]*>fires at 09:15<'
+
 # editor panes + markdown pipeline
 check "editor pane: markdown label"   'pane-tag">markdown'
 check "editor pane: rendered label"   'pane-tag">rendered'
@@ -188,6 +195,9 @@ check_board "review column rendered"       'data-stage="review"'
 check_board "done column rendered"         'data-stage="done"'
 check_board "column headers rendered"      'class="board-col__head"'
 check_board "fixture card rendered"        'data-id="render-check-blocked"'
+# The time rides on the card's meta row beside the date, so a card you scan on
+# the board says when the thing is -- not just which day.
+check_board "a time chip is on the card"   'card__chip--time"[^>]*>09:15[^<]*10:30<'
 check_board "blocker card rendered"        'data-id="render-check-blocker"'
 check_board "card move controls rendered"  'class="card__bitem'
 check_board "board filters rendered"       'id="board-blocked-only"'
