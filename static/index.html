@@ -27,6 +27,7 @@
       <button data-view="board"       class="tab"        role="tab">Board</button>
       <button data-view="mood"        class="tab"        role="tab">Mood</button>
       <button data-view="transcribe"  class="tab"        role="tab">Transcribe</button>
+      <button data-view="workspaces"  class="tab"        role="tab">Workspaces</button>
       <button data-view="collections" class="tab"        role="tab">Collections</button>
       <button data-view="timeline"    class="tab"        role="tab">Timeline</button>
       <button data-view="calendar"    class="tab"        role="tab">Calendar</button>
@@ -217,6 +218,13 @@
             <div class="h-head"><h2>Board</h2></div>
             <ul id="home-board" class="h-tiles h-tiles--wide"></ul>
           </section>
+
+          <section class="h-card h-card--workspaces">
+            <div class="h-head"><h2>Workspaces</h2></div>
+            <p id="home-workspaces-line" class="h-sub">—</p>
+            <ul id="home-workspaces-list" class="h-list"></ul>
+            <button id="home-workspaces-action" class="h-button" type="button">Workspaces</button>
+          </section>
         </div>
 
       </div>
@@ -285,6 +293,27 @@
           <ul id="transcribe-list" class="tr-list"></ul>
           <p id="transcribe-empty" class="tr-empty">Nothing transcribed yet.</p>
         </section>
+      </div>
+    </section>
+
+    <section id="workspaces-view" class="workspaces-view hidden">
+      <div class="home-inner">
+
+        <header class="home-hero">
+          <svg class="home-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M3.5 7.5A2.5 2.5 0 0 1 6 5h3.2l1.9 2.4H18a2.5 2.5 0 0 1 2.5 2.5v6.6A2.5 2.5 0 0 1 18 19H6a2.5 2.5 0 0 1-2.5-2.5z"/>
+            <path d="M7.5 12.5h9"/>
+          </svg>
+          <h1 class="home-title">Workspaces</h1>
+          <p class="home-sub" id="workspaces-line" aria-live="polite">reading the folders…</p>
+          <div class="home-actions">
+            <button id="workspaces-refresh" class="btn btn--ghost" type="button"
+                    title="read every folder again">Read them again</button>
+          </div>
+        </header>
+
+        <div id="workspace-cards" class="workspace-cards"></div>
+        <p id="workspaces-empty" class="empty-state hidden"></p>
       </div>
     </section>
 
@@ -453,6 +482,24 @@
             </div>
             <!-- the one rule nobody can guess: see static/js/schedule.js -->
             <p id="note-time-hint" class="field-hint"></p>
+          </div>
+          <div class="field field--wide">
+            <span class="field-label">folder</span>
+            <div class="path-row">
+              <input id="note-path" class="path-row__field" type="text"
+                     placeholder="~/Documents/School/Programming/Scripts"
+                     spellcheck="false" autocomplete="off"
+                     aria-label="a folder this note is about"
+                     title="a folder this note is about — a code workspace, a project">
+              <button id="note-path-clear" class="time-row__clear" type="button"
+                      aria-label="remove the folder" title="remove the folder">✕</button>
+            </div>
+            <!-- what the folder is right now: filled by renderWorkspacePanel() -->
+            <p id="note-path-hint" class="field-hint"></p>
+          </div>
+          <div class="field field--wide" id="workspace-panel-field" hidden>
+            <span class="field-label">workspace</span>
+            <div id="workspace-panel" class="workspace-panel"></div>
           </div>
           <div class="field field--wide">
             <span class="field-label">tags</span>

@@ -289,6 +289,11 @@ class Note:
     #: rather than a number someone has to add up. An end at or before the
     #: start crosses midnight.
     until: Optional[str] = None
+    #: A directory this note is *about* -- a code workspace, a project folder.
+    #: The note is the home for that folder: what it holds, what is uncommitted,
+    #: when it was last committed. Kept as the person wrote it (`~/...` and all)
+    #: because the path is theirs to recognise, and expanded only when read.
+    path: Optional[str] = None
     parent_id: Optional[str] = None
     created: date = field(default_factory=date.today)
     mood: Optional[str] = None
@@ -334,6 +339,7 @@ class Note:
             # app's own files must never be the ambiguous form.
             "at": parse_time(self.at),
             "until": parse_time(self.until),
+            "path": self.path,
             "parent_id": self.parent_id,
             "created": self.created.isoformat(),
             "mood": self.mood,
@@ -390,6 +396,12 @@ class Note:
         # not scheduling.
         at = parse_time(raw_time_from_frontmatter(md, "at") or meta.get("at"))
         until = parse_time(raw_time_from_frontmatter(md, "until") or meta.get("until"))
+        # A path is not a time: YAML has one way to lose it (`~` alone is null,
+        # which is how "no path" reads anyway) and no way to mangle it. Kept as
+        # written, and str() because a path that parses as a number -- `path: 7`
+        # -- arrives as an int and would otherwise be compared as one.
+        path = meta.get("path")
+        path = str(path) if path is not None else None
 
         try:
             created = date.fromisoformat(str(meta["created"])) if meta.get("created") else date.today()
@@ -434,6 +446,7 @@ class Note:
             dates=dates,
             at=at,
             until=until,
+            path=path,
             parent_id=meta.get("parent_id"),
             created=created,
             mood=meta.get("mood"),
@@ -460,6 +473,9 @@ class Note:
         # spelling so no client has to reassemble a range.
         d["at"] = parse_time(self.at)
         d["until"] = parse_time(self.until)
+        # The path as written. Whether it is a workspace, and what that workspace
+        # holds, is `app.workspace`'s answer -- not this model's.
+        d["path"] = self.path
         d["time_label"] = schedule_label(self)
         d["created"] = self.created.isoformat()
         # asdict() leaves these as date objects, which are not JSON.

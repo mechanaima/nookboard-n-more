@@ -18,7 +18,12 @@ NOTE_ID="render-check"
 BOARD_ID="render-check-blocked"
 BOARD_BLOCKER="render-check-blocker"
 MOOD_ID="render-check-mood"
+WS_ID="render-check-workspace"
 TODAY="$(date +%F)"
+# The checkout this script lives in: a folder that always exists, always has
+# git, and always has files -- so the workspace assertions do not depend on
+# anything on the machine except the thing being checked.
+CHECKOUT="$(cd "$(dirname "$0")/.." && pwd)"
 
 if ! curl -sf --max-time 3 "$BASE/api/health" >/dev/null; then
   echo "!! no server at $BASE — start it with 'make dev' first" >&2
@@ -31,11 +36,14 @@ BOARD_DOM="$(mktemp /tmp/nookboard-board-XXXXXX.html)"
 MOOD_DOM="$(mktemp /tmp/nookboard-mood-XXXXXX.html)"
 HOME_DOM="$(mktemp /tmp/nookboard-home-XXXXXX.html)"
 TRANSCRIBE_DOM="$(mktemp /tmp/nookboard-transcribe-XXXXXX.html)"
+WS_DOM="$(mktemp /tmp/nookboard-ws-XXXXXX.html)"
+WS_NOTE_DOM="$(mktemp /tmp/nookboard-ws-note-XXXXXX.html)"
 cleanup() {
-  for id in "$NOTE_ID" "$TARGET_ID" "$BOARD_ID" "$BOARD_BLOCKER" "$MOOD_ID"; do
+  for id in "$NOTE_ID" "$TARGET_ID" "$BOARD_ID" "$BOARD_BLOCKER" "$MOOD_ID" "$WS_ID"; do
     curl -s -o /dev/null -X DELETE "$BASE/api/notes/$id" || true
   done
-  rm -rf "$PROFILE" "$DOM" "$BOARD_DOM" "$MOOD_DOM" "$HOME_DOM" "$TRANSCRIBE_DOM"
+  rm -rf "$PROFILE" "$DOM" "$BOARD_DOM" "$MOOD_DOM" "$HOME_DOM" "$TRANSCRIBE_DOM" \
+    "$WS_DOM" "$WS_NOTE_DOM"
 }
 trap cleanup EXIT
 
@@ -101,6 +109,15 @@ check_absent() { # dom-file, name, extended-regex
     echo "  ok   $2"; pass=$((pass+1))
   fi
 }
+
+# Workspace fixture: a note that points at this checkout. Reading a folder is
+# all the feature does, so pointing it at the app's own repo is safe -- and it is
+# the one folder guaranteed to be a git repo with files in it.
+curl -sf -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/json' -d "{
+  \"id\": \"$WS_ID\", \"collection\": \"workspaces\",
+  \"title\": \"Render Check Workspace\", \"signifier\": \"note\",
+  \"status\": \"open\", \"path\": \"$CHECKOUT\"
+}" || { echo "!! could not seed workspace fixture" >&2; exit 1; }
 
 # --- render 1: a note in the rapid log -------------------------------------
 URL="$BASE/#/note/$NOTE_ID"
@@ -335,6 +352,70 @@ check_tr "what happens to the file is stated" 'Nothing leaves this machine'
 check_tr_absent "engine line not the placeholder" 'id="transcribe-engine"[^>]*>asking what is installed'
 check_tr_absent "no error shown before anything is tried" 'id="transcribe-error" class="tr-error"'
 check_tr_absent "the empty state is not left under a job" 'id="transcribe-list"><li'
+
+# --- render 6: the workspaces view -----------------------------------------
+# The cards are painted from /api/workspaces after boot, so these are really
+# asking whether that fetch landed and whether the cards were built from it: a
+# throw inside renderWorkspaces() leaves the hero's placeholder line and an empty
+# grid, which is what the two _absent checks pin.
+#
+# The fixture points at this checkout, so the assertions hold on any machine and
+# in any vault: a real repo, a real branch, real files, real openers resolved.
+WS_URL="$BASE/#/view/workspaces"
+chromium --headless=new --disable-gpu --no-sandbox \
+  --user-data-dir="$PROFILE" --virtual-time-budget=5000 \
+  --dump-dom "$WS_URL" > "$WS_DOM" 2>/dev/null
+
+check_ws() { check_file "$WS_DOM" "$1" "$2"; }
+check_ws_absent() { check_absent "$WS_DOM" "$1" "$2"; }
+
+echo "rendering $WS_URL  ($(wc -c < "$WS_DOM") bytes of DOM)"
+
+check_ws "workspaces tab marked active"  'data-view="workspaces"[^>]*class="tab active"|class="tab active"[^>]*data-view="workspaces"'
+check_ws "view shown, not hidden"        'id="workspaces-view" class="workspaces-view"'
+check_ws "layout in wide mode"           'class="layout is-wide'
+check_ws "editor collapsed with no note" 'class="layout is-wide is-wide-empty"'
+check_ws "a card was built"              'class="ws-card '
+check_ws "the card names the note"       'class="ws-card__title"[^>]*>Render Check Workspace<'
+# The folder is the checkout, so it is a repo and must say so -- and the card has
+# to carry a branch line, which only a successful git read produces.
+check_ws "the folder is called a repo"   'class="ws-card__kind"[^>]*>repo<'
+check_ws "the branch is named"           'class="ws-card__branch"[^>]*>[^<]+<'
+check_ws "a state line was written"      'class="ws-card__state"[^>]*>[^<]+<'
+check_ws "the openers are offered"       'class="ws-open-row"'
+# Three openers per card, whatever the vault holds: this check runs against the
+# real vault too, so the count has to come from the cards themselves.
+ws_cards="$(grep -oE 'class="ws-card ' "$WS_DOM" | wc -l)"
+check_count "$WS_DOM" "three openers on every card" 'class="ws-open"' $((ws_cards * 3))
+check_ws_absent "the hero line is not left as the placeholder" 'reading the folders'
+check_ws_absent "no card claims no workspaces" 'no workspaces yet<'
+check_ws_absent "the empty state is not left under a card" 'id="workspaces-empty" class="empty-state"'
+
+# --- render 7: the folder row in the editor --------------------------------
+# The panel is painted from /api/workspaces/{id} after the note loads, so the
+# facts below are the fetch landing, not the markup existing: the field is
+# `hidden` until the read answers, and the hint is the placeholder until then.
+WS_NOTE_URL="$BASE/#/note/$WS_ID"
+chromium --headless=new --disable-gpu --no-sandbox \
+  --user-data-dir="$PROFILE" --virtual-time-budget=6000 \
+  --dump-dom "$WS_NOTE_URL" > "$WS_NOTE_DOM" 2>/dev/null
+
+check_wsnote() { check_file "$WS_NOTE_DOM" "$1" "$2"; }
+check_wsnote_absent() { check_absent "$WS_NOTE_DOM" "$1" "$2"; }
+
+echo "rendering $WS_NOTE_URL  ($(wc -c < "$WS_NOTE_DOM") bytes of DOM)"
+
+check_wsnote "the folder row is on the form" 'id="note-path"'
+check_wsnote "the row can be cleared"        'id="note-path-clear"'
+# The panel is unhidden only once the read answers, so this is the fetch landing:
+# `hidden` removed and nothing left in its place is exactly what `>` after the id
+# proves. (The id sits after the class in the markup, hence this shape.)
+check_wsnote "the panel was opened"          'class="field field--wide" id="workspace-panel-field">'
+check_wsnote "the branch fact is listed"     'class="ws-fact__key">branch<'
+check_wsnote "the folder fact names it"      "class=\"ws-fact__value\">[^<]*$(basename "$CHECKOUT")<"
+check_wsnote "the openers are offered here"  'class="ws-open-row"'
+check_wsnote_absent "the hint is not still asking for a path" 'point this at a folder'
+check_wsnote_absent "the panel is not left hidden" 'id="workspace-panel-field" class="field field--wide" hidden'
 
 echo
 echo "pass=$pass fail=$fail"

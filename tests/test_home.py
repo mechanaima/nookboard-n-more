@@ -175,7 +175,30 @@ def test_the_summary_carries_every_card():
     assert out["today"] == "2026-09-24"
     assert set(out) == {
         "vault", "today", "calendar", "statistics", "board", "today_card", "mood",
+        "workspaces",
     }
+    # No states were handed over, so the card says there is nothing to show --
+    # rather than inventing a count for folders nobody read.
+    assert out["workspaces"]["total"] == 0
+    assert out["workspaces"]["line"] == "no workspaces yet"
+
+
+def test_the_workspaces_card_is_built_from_the_states_it_is_handed():
+    states = [
+        {"note_title": "Settled", "uncommitted": 0, "reasons": [], "markers": []},
+        {"note_title": "Busy", "uncommitted": 4, "reasons": ["4 uncommitted"],
+         "markers": []},
+    ]
+    out = home.summary(
+        [], root="/tmp/v", today=THURSDAY, calendar_counts={}, workspace_states=states
+    )
+    card = out["workspaces"]
+    assert card["total"] == 2
+    assert card["need_attention"] == 1
+    assert card["line"] == "1 workspace needs attention"
+    # The same order the view shows, so the card's first line is the view's first
+    # card: the thing that wants you.
+    assert [w["note_title"] for w in card["workspaces"]] == ["Busy", "Settled"]
 
 
 def test_the_cards_agree_with_the_views_they_stand_for():

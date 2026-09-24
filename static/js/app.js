@@ -3,6 +3,10 @@ import { parseRapidInput } from "./rapid.js";
 import { monthGrid, shiftMonth } from "./calendar.js";
 import { extractWikilinks, renderWikilinks } from "./wikilink.js";
 import { timeHint } from "./schedule.js";
+import {
+  branchLine, buttons as workspaceButtons, changedLine, commitLine,
+  languageLine, markerCount, markerLine, stateClass,
+} from "./workspace.js";
 import { weekKey } from "./week.js";
 import {
   BOARD_TILES, clockTime, greeting, longDate, statTiles, todayAction, todayLine,
@@ -87,6 +91,24 @@ const api = {
   async home(month) {
     const qs = month ? `?month=${encodeURIComponent(month)}` : "";
     return jsonOrThrow(await fetch(`/api/home${qs}`));
+  },
+
+  // -- workspaces
+  async workspaces() { return jsonOrThrow(await fetch("/api/workspaces")); },
+  async workspace(id) {
+    return jsonOrThrow(await fetch(`/api/workspaces/${encodeURIComponent(id)}`));
+  },
+  // The one call that starts a process on this machine, so it carries the header
+  // the server asks for -- and which a page you merely visited cannot set.
+  async openWorkspace(id, what) {
+    return jsonOrThrow(await fetch(
+      `/api/workspaces/${encodeURIComponent(id)}/open`,
+      {
+        method: "POST",
+        headers: { ...JSON_HEADERS, "X-Nookboard-Action": "open" },
+        body: JSON.stringify({ what }),
+      },
+    ));
   },
 
   // -- transcription
@@ -237,7 +259,7 @@ const SIDEBAR_VIEWS = ["rapid", "collections", "timeline", "calendar"];
 //: Views that need the full width and therefore trade away the sidebar: the
 //: board (five columns) and mood (a year of weeks). They keep the editor as a
 //: second column so a note can be read or fixed without leaving the view.
-const WIDE_VIEWS = ["home", "board", "mood", "transcribe"];
+const WIDE_VIEWS = ["home", "board", "mood", "transcribe", "workspaces"];
 
 function showView(name) {
   state.activeView = name;
@@ -255,6 +277,7 @@ function showView(name) {
   if (name === "board") renderBoard();
   if (name === "mood") renderMood();
   if (name === "transcribe") renderTranscribe();
+  if (name === "workspaces") renderWorkspaces();
   // Leaving the view with the microphone open would keep the light on, and there
   // is no visible control left to stop it.
   if (name !== "transcribe") stopRecording();
@@ -279,6 +302,9 @@ async function refresh() {
   // when a note changes, so it is asked again rather than patched.
   if (state.activeView === "home") await renderHome();
   if (state.activeView === "transcribe") await renderTranscribe();
+  // A workspace is read from the folder itself, so any change to a note can
+  // change what it says -- and the folder may have moved on since it was read.
+  if (state.activeView === "workspaces") await renderWorkspaces();
 }
 
 // A wide view trades the sidebar for itself and keeps the editor alongside, so
@@ -495,6 +521,8 @@ function renderEditor() {
   $("#note-at").value = n.at || "";
   $("#note-until").value = n.until || "";
   renderTimeHint();
+  $("#note-path").value = n.path || "";
+  renderWorkspacePanel();
   state.activeTags = (n.tags || []).slice();
   $("#note-tags-input").value = "";
   $("#note-recurrence").value = n.recurrence || "";
@@ -756,6 +784,9 @@ async function saveEditor() {
       // refuses anything it cannot read, so a typo cannot be swallowed.
       at: $("#note-at").value || null,
       until: $("#note-until").value || null,
+      // A folder, or nothing. The server refuses anything that is not a string
+      // and reads the folder itself -- the editor never claims it is valid.
+      path: $("#note-path").value.trim() || null,
       tags,
       mood: state.activeMood || null,
       // Explicit null when unset, so clearing a reading actually clears it
@@ -2359,6 +2390,25 @@ function paintHome() {
   const button = $("#home-today-action");
   button.textContent = action.label;
   button.dataset.kind = action.kind;
+
+  // The folders, in the server's own sentence. The card lists the ones that want
+  // attention -- the same ones that sort to the top of the view -- and says how
+  // many are settled rather than leaving the rest invisible.
+  const folders = payload.workspaces || { total: 0, line: "", workspaces: [] };
+  $("#home-workspaces-line").textContent = folders.line || "—";
+  const folderList = $("#home-workspaces-list");
+  folderList.textContent = "";
+  for (const ws of (folders.workspaces || []).slice(0, 3)) {
+    const li = document.createElement("li");
+    // textContent: a note title and a folder's own words are user data.
+    li.textContent = `• ${ws.note_title || ws.name} — ${ws.words}`;
+    folderList.append(li);
+  }
+  if (!folders.total) {
+    const li = document.createElement("li");
+    li.textContent = "• no notes point at a folder yet";
+    folderList.append(li);
+  }
 }
 
 // -- transcription -----------------------------------------------------------
@@ -2471,6 +2521,241 @@ async function renderTranscribe() {
   fillTranscribeOptions(status);
   renderTranscribeJobs(status.jobs);
   scheduleTranscribePoll(status.jobs);
+}
+
+// -- workspaces -------------------------------------------------------------
+//
+// A workspace card is a note plus what its folder is *now*. Every fact on it —
+// the branch, the counts, the age, the sentence — is the server's reading of the
+// folder (`app/workspace.py`); this code only decides how it reads. Nothing here
+// counts anything.
+
+function wsFlash(text, isError = false) {
+  const el = $("#save-flash");
+  if (!el) return;
+  el.textContent = text;
+  el.classList.remove("show");
+  void el.offsetWidth; // restart the animation
+  el.classList.add("show");
+  if (isError) el.classList.add("save-flash--error");
+  setTimeout(() => el.classList.remove("show", "save-flash--error"), 5000);
+}
+
+//: The buttons that open the folder elsewhere. A button whose tool is missing is
+//: disabled *and says which tool*, because a greyed control with no explanation
+//: is the app keeping a secret.
+function wsOpenRow(ws, tools) {
+  const row = document.createElement("div");
+  row.className = "ws-open-row";
+  for (const button of workspaceButtons(ws, tools)) {
+    const node = document.createElement("button");
+    node.type = "button";
+    node.className = "ws-open";
+    node.textContent = button.label;
+    node.disabled = !button.enabled;
+    node.title = button.why;
+    if (button.enabled) {
+      node.addEventListener("click", async () => {
+        try {
+          // The server reports the argv it ran, so this says what actually
+          // happened rather than implying it happened.
+          const out = await api.openWorkspace(ws.note_id, button.what);
+          wsFlash(`opened ${button.what}: ${(out.ran || []).join(" ")}`);
+        } catch (err) {
+          wsFlash(err.message, true);
+        }
+      });
+    }
+    row.append(node);
+  }
+  return row;
+}
+
+function wsMarkers(ws, limit) {
+  const markers = ws.markers || [];
+  if (!markers.length) return null;
+  const box = document.createElement("div");
+  box.className = "ws-markers";
+  const head = document.createElement("span");
+  head.className = "ws-markers__head";
+  head.textContent = markerCount(markers);
+  box.append(head);
+  const list = document.createElement("ul");
+  for (const marker of markers.slice(0, limit)) {
+    const li = document.createElement("li");
+    // `file:line` first: it is the part you can act on.
+    li.textContent = markerLine(marker);
+    list.append(li);
+  }
+  if (markers.length > limit) {
+    const li = document.createElement("li");
+    li.className = "ws-markers__more";
+    li.textContent = `+${markers.length - limit} more in the code`;
+    list.append(li);
+  }
+  box.append(list);
+  return box;
+}
+
+function workspaceCard(ws) {
+  const card = document.createElement("article");
+  card.className = `ws-card ${stateClass(ws)}`;
+  card.dataset.id = ws.note_id || "";
+
+  const head = document.createElement("div");
+  head.className = "ws-card__head";
+  const title = document.createElement("button");
+  title.type = "button";
+  title.className = "ws-card__title";
+  title.textContent = ws.note_title || ws.name;
+  title.title = "open the note";
+  if (ws.note_id) title.addEventListener("click", () => openEditor(ws.note_id));
+  head.append(title);
+  const kind = document.createElement("span");
+  kind.className = "ws-card__kind";
+  kind.textContent = ws.is_repo ? (ws.nested ? "in a repo" : "repo") : "folder";
+  if (ws.is_repo) kind.title = ws.repo_root || "";
+  head.append(kind);
+
+  const path = document.createElement("p");
+  path.className = "ws-card__path";
+  path.textContent = ws.display_path || ws.path;
+
+  const line = document.createElement("p");
+  line.className = "ws-card__state";
+  line.textContent = ws.words || "";
+
+  card.append(head, path, line);
+
+  const branch = ws.is_repo ? branchLine(ws) : "";
+  if (branch) {
+    const b = document.createElement("p");
+    b.className = "ws-card__branch";
+    b.textContent = branch;
+    card.append(b);
+  }
+
+  const commit = commitLine(ws);
+  if (commit) {
+    const c = document.createElement("p");
+    c.className = "ws-card__commit";
+    c.textContent = commit;
+    card.append(c);
+  }
+
+  const langs = languageLine(ws.languages);
+  if (langs) {
+    const l = document.createElement("p");
+    l.className = "ws-card__langs";
+    l.textContent = langs;
+    card.append(l);
+  }
+
+  const changed = changedLine(ws);
+  if (changed) {
+    const c = document.createElement("p");
+    c.className = "ws-card__changed";
+    c.textContent = changed;
+    card.append(c);
+  }
+
+  const markers = wsMarkers(ws, 3);
+  if (markers) card.append(markers);
+  card.append(wsOpenRow(ws, state.workspaceTools || {}));
+  return card;
+}
+
+async function renderWorkspaces() {
+  const box = $("#workspace-cards");
+  const empty = $("#workspaces-empty");
+  let body;
+  try {
+    body = await api.workspaces();
+  } catch (err) {
+    $("#workspaces-line").textContent = `could not read the folders: ${err.message}`;
+    box.replaceChildren();
+    empty.classList.add("hidden");
+    return;
+  }
+  state.workspaceTools = body.tools || {};
+  state.workspaces = body.workspaces || [];
+  $("#workspaces-line").textContent = body.line || "";
+  box.replaceChildren(...state.workspaces.map(workspaceCard));
+  const none = state.workspaces.length === 0;
+  empty.classList.toggle("hidden", !none);
+  if (none) {
+    empty.textContent = "No notes point at a folder yet. A note with a "
+      + "`path:` is a workspace — set one in the editor's folder row, and this "
+      + "view reads that folder: its branch, what is uncommitted, when it was "
+      + "last committed, and what markers the code still carries.";
+  }
+}
+
+//: The panel under the editor's folder row. Reads the *saved* note, so a path
+//: that has not been saved yet says so instead of showing the folder it used to
+//: point at.
+async function renderWorkspacePanel() {
+  const noteId = state.activeId;
+  const field = $("#workspace-panel-field");
+  const panel = $("#workspace-panel");
+  const hint = $("#note-path-hint");
+  if (!field || !panel || !hint) return;
+  const typed = $("#note-path").value.trim();
+  const note = state.notes.find((n) => n.id === noteId);
+  const saved = (note && note.path) || "";
+
+  field.hidden = true;
+  panel.replaceChildren();
+
+  if (!typed) {
+    hint.textContent = saved
+      ? "saved as empty — save to stop treating this as a workspace"
+      : "point this at a folder and the app reads it here";
+    return;
+  }
+  if (typed !== saved) {
+    hint.textContent = `not read yet — save the note to read ${typed}`;
+    return;
+  }
+  hint.textContent = "reading…";
+  let wsState;
+  try {
+    wsState = await api.workspace(noteId);
+  } catch (err) {
+    hint.textContent = `could not read it: ${err.message}`;
+    return;
+  }
+  // The answer belongs to the note that asked for it: painting it into another
+  // note would describe someone else's folder.
+  if (state.activeId !== noteId) return;
+  hint.textContent = wsState.words || "";
+  state.workspaceTools = wsState.tools || state.workspaceTools || {};
+
+  const rows = [];
+  const facts = [
+    ["folder", wsState.display_path || wsState.path],
+    ["branch", wsState.is_repo ? branchLine(wsState) : "not a git repo"],
+    ["last commit", commitLine(wsState)],
+    ["uncommitted", changedLine(wsState) || "nothing"],
+    ["languages", languageLine(wsState.languages) || "no code files"],
+  ];
+  for (const [label, value] of facts) {
+    const row = document.createElement("div");
+    row.className = "ws-fact";
+    const k = document.createElement("span");
+    k.className = "ws-fact__key";
+    k.textContent = label;
+    const v = document.createElement("span");
+    v.className = "ws-fact__value";
+    v.textContent = value || "—";
+    row.append(k, v);
+    rows.push(row);
+  }
+  panel.append(...rows);
+  const markers = wsMarkers(wsState, 8);
+  if (markers) panel.append(markers);
+  panel.append(wsOpenRow(wsState, state.workspaceTools));
+  field.hidden = false;
 }
 
 function scheduleTranscribePoll(jobs) {
@@ -2695,6 +2980,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     await startTranscribe(() => api.transcribeResummarise(again.dataset.resummarise));
   });
 
+  $("#home-workspaces-action").addEventListener("click", () => showView("workspaces"));
   $("#home-today-action").addEventListener("click", async () => {
     const card = state.home?.today_card;
     if (!card) return;
@@ -2773,6 +3059,14 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#note-at").addEventListener("input", renderTimeHint);
   $("#note-until").addEventListener("input", renderTimeHint);
   $("#note-dates").addEventListener("input", renderTimeHint);
+  // The path hint says what the app will do with what is typed, and the panel
+  // below it shows what the folder *is* -- one read, at the moment you look.
+  $("#note-path").addEventListener("input", renderWorkspacePanel);
+  $("#note-path-clear").addEventListener("click", () => {
+    $("#note-path").value = "";
+    renderWorkspacePanel();
+  });
+  $("#workspaces-refresh").addEventListener("click", () => renderWorkspaces());
   $("#note-time-clear").addEventListener("click", () => {
     $("#note-at").value = "";
     $("#note-until").value = "";

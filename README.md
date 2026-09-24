@@ -103,7 +103,7 @@ Design decisions worth knowing before you edit it:
 The UI is checked headlessly, not by eyeball alone:
 
 ```bash
-./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 101 DOM assertions
+./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 145 DOM assertions
 ./tools/shot.sh /tmp/shot.png 'http://127.0.0.1:8765/'        # screenshot
 ./tools/contrast.sh 'http://127.0.0.1:8765/#/view/board' .card__chip
 ```
@@ -178,10 +178,14 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
   the summary, nothing leaving the machine (see [Transcription](#transcription))
 - **Local AI** — summarize / suggest tags / suggest links / ask your notes,
   streamed from llama.cpp (see [Local AI](#local-ai))
+- **Workspaces** — point a note at a folder of code (`path:`) and it shows what
+  that folder is *now*: branch, what is uncommitted, when it was last committed,
+  the markers the code still carries, and buttons to open it in your editor,
+  terminal or file manager (see [Workspaces](#workspaces))
 
 ## Home
 
-The view the app opens on. Six cards over the same vault every other view reads.
+The view the app opens on. Seven cards over the same vault every other view reads.
 
 | card | what it shows |
 |---|---|
@@ -191,6 +195,7 @@ The view the app opens on. Six cards over the same vault every other view reads.
 | Mood | the streak and today's reading |
 | Today | whether today has a note yet, and what has been finished |
 | Board | ready / open / blocked / done |
+| Workspaces | which folders want attention, and what they say |
 
 **Why the clock is the browser's job.** Every other card is a fact about the
 vault, and the server knows those. The time is not one: a clock rendered
@@ -677,6 +682,68 @@ It is a **user** timer, not a system service: no root, and it reads the same vau
 the app does. Re-run the installer after moving the checkout — it rewrites the
 paths rather than making you hand-edit unit files.
 
+## Workspaces
+
+A note with a `path:` is a workspace: the note is the *thing you write about*,
+and the folder is what it points at.
+
+```yaml
+---
+collection: workspaces
+path: ~/Documents/School/Programming/Scripts
+---
+```
+
+```bash
+curl localhost:8765/api/workspaces            # every one, with its state
+curl localhost:8765/api/workspaces/ws-scripts # one
+```
+
+| what it shows | where it comes from |
+|---|---|
+| branch, and how far it has drifted | `git status --porcelain=v2 --branch` |
+| how much is uncommitted, and the file names | the same read |
+| when the last commit was, and its subject | `git log -1` |
+| how many files, and in what languages | one walk of the tree |
+| `TODO` / `FIXME` / `XXX` / `HACK` in comments | the same walk |
+| whether `code`, `alacritty`, `xdg-open` are installed | resolved the way every other tool is |
+
+**The folder is read, never guessed.** Every number on a card comes from `git`
+itself, in a request the server makes when you look — no cache, because a cache
+is a second answer that goes stale the moment you commit. This is the one place
+in the app where the tempting lie — "modified 3 hours ago" from a file's mtime —
+would be most convincing, so nothing here touches a modification time: what a
+folder *is* is a question only a version control system can answer.
+
+**A folder inside a bigger repo says so.** `~/Documents/School/Linux/Scripts` is
+not its own repository; it sits inside the School repo, so its card reads *"1
+uncommitted here · 4 days ago · in the School repo"*. The count is about this
+folder, the repo is what would take the commit, and git is asked at the **repo
+root**: asked from inside the subdirectory, git reports paths *relative to that
+subdirectory* (`./`, `../elsewhere.py`), which is how a prefix filter silently
+matches nothing.
+
+**A marker has to be in a comment.** Uppercase `TODO`/`FIXME`/`XXX`/`HACK`
+behind a comment introducer — so `Stage.TODO` and the word "todo" in a sentence
+are not markers, and neither is marker-shaped *data*: a string literal like
+`("# FIXME: this loops forever", "FIXME")` in a test is not a note-to-self. It
+is a heuristic (a marker after an apostrophe inside a real comment is missed),
+and the app prints only the text it actually found, so a missed marker is
+quieter than a quoted one that was never there.
+
+**Opening a folder is an allowlist, and it says what it will run.** The three
+buttons call `POST /api/workspaces/{id}/open` with `{"what": "editor"}`; the
+server picks the binary from a fixed list, refuses anything else, and answers
+with the argv it ran. The endpoint is bound to localhost and requires the app's
+own header, so a page you merely visit cannot launch a terminal on your machine.
+A button whose tool is missing stays visible, disabled, and says which tool.
+
+**Honest scope: a workspace is a link plus a state line, not a second IDE.**
+There is no file tree, no editor, no embedded terminal, no code search index and
+no GitHub sync. Those exist, and they are better at being themselves than this
+would be at imitating them; the point here is that the folder is one card away
+from the note you were already writing.
+
 ## API
 
 - `GET    /api/health`
@@ -717,6 +784,16 @@ paths rather than making you hand-edit unit files.
 - `GET    /api/calendar.ics` → RFC 5545 feed for calendar subscription
 - `GET    /api/config` → which vault and model this instance is using
 - `POST   /api/rebuild-index` (rebuild DB from .md files)
+
+Workspaces (a note with a `path:`):
+
+- `GET    /api/workspaces` → every workspace note and what its folder is *now*,
+  plus `summary` and the sentence the dashboard card shows
+- `GET    /api/workspaces/{id}` → one, with `tools` (which opener binaries exist)
+- `POST   /api/workspaces/{id}/open` `{what: "editor"|"terminal"|"files"}` →
+  runs the allowlisted binary and answers with the argv; `403` without the app's
+  own `X-Nookboard-Action` header, `400` for anything not in the list, `409` when
+  the folder is not there
 
 Board and dependencies:
 
@@ -884,7 +961,7 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 553 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 657 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),
@@ -898,17 +975,22 @@ make test        # 553 pytest — model, vault, obsidian, foreign-vault, db, api
                  #              shape), transcribe API (the endpoints),
                  #              schedule (what a time means: parsing, labels,
                  #              lateness, the YAML shapes a hand-written file
-                 #              can hold)
-make test-js     # 153 node:test — rapid-log parsing, calendar maths, wikilinks,
+                 #              can hold),
+                 #              workspace (what a folder is: git reads, nesting,
+                 #              ages, markers, the openers' argv) and the workspace
+                 #              API (the refusals: no header, bad tool, gone folder)
+make test-js     # 165 node:test — rapid-log parsing, calendar maths, wikilinks,
                  #              ISO week labels, display helpers, board helpers,
                  #              mood grid helpers, query fences (finding them,
                  #              splicing answers, leaving other languages alone),
                  #              transcribe wording (states, progress, durations,
                  #              the recorder's types), the editor's time wording (a time
-                 #              with no date fires nothing), and that every local
-                 #              import exists
+                 #              with no date fires nothing), the workspace card's
+                 #              wording (branch drift, a subject with no age on it,
+                 #              a disabled opener that names its missing tool), and
+                 #              that every local import exists
 make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
-./tools/check_render.sh   # 123 DOM assertions in headless Chromium
+./tools/check_render.sh   # 145 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether

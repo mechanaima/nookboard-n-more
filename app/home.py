@@ -19,7 +19,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
-from . import daily, mood as moodlib
+from . import daily, mood as moodlib, workspace
 from .deps import board_summary, index_by_id
 from .models import Note, Signifier, is_work
 
@@ -121,6 +121,22 @@ def mood_card(notes: Sequence[Note], today: date) -> dict:
     }
 
 
+def workspaces_card(states: Sequence[dict]) -> dict:
+    """The dashboard's one line about folders.
+
+    The caller does the reading -- `app.workspace_run` is the only code in this
+    project that touches a disk -- so this only phrases what it was handed. The
+    sentence is the same one the Workspaces view shows, from the same place, so
+    the dashboard and the view cannot describe the same set differently.
+    """
+    summary = workspace.summarize(list(states))
+    return {
+        **summary,
+        "line": workspace.attention_line(summary),
+        "workspaces": workspace.sort_states(list(states)),
+    }
+
+
 def summary(
     notes: Sequence[Note],
     *,
@@ -129,6 +145,9 @@ def summary(
     calendar_counts: Mapping[str, int],
     month: Optional[date] = None,
     collections: Optional[Sequence[str]] = None,
+    # The folder states someone actually read. A default would let a caller ship
+    # a card that quietly says "no workspaces yet" because it never looked.
+    workspace_states: Sequence[dict] = (),
 ) -> dict:
     """Everything the dashboard shows. One call, so the cards agree."""
     # Filtered the way the board view filters before it counts, so the card and
@@ -143,4 +162,5 @@ def summary(
         "board": board,
         "today_card": today_card(notes, today),
         "mood": mood_card(notes, today),
+        "workspaces": workspaces_card(workspace_states),
     }

@@ -7,7 +7,7 @@ import json
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from dataclasses import replace
@@ -28,6 +28,8 @@ from .models import (
 )
 from . import home
 from . import insight
+from . import workspace
+from . import workspace_run
 from . import mood as moodlib
 from . import query as querylib
 from . import schedule
@@ -55,6 +57,8 @@ class NoteIn(BaseModel):
     #: "HH:MM". A note with a time names an instant -- see `app.schedule`.
     at: Optional[str] = None
     until: Optional[str] = None
+    #: A folder this note is about. A note that has one is a workspace.
+    path: Optional[str] = None
     parent_id: Optional[str] = None
     mood: Optional[str] = None
     pain: Optional[int] = None
@@ -351,9 +355,13 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         `transcripts` is here for the same reason: the transcribe form's "into"
         dropdown defaults to it, and a default that is not among the options is a
         form that cannot be submitted.
+
+        `workspaces` too: the first workspace note has to be creatable from the
+        editor, and the editor's dropdown is this list.
         """
         cols = vault.collections()
-        for name in (templates.TEMPLATES_COLLECTION, transcribe.TRANSCRIPT_COLLECTION):
+        for name in (templates.TEMPLATES_COLLECTION, transcribe.TRANSCRIPT_COLLECTION,
+                     workspace.WORKSPACES_COLLECTION):
             if name not in cols:
                 cols = sorted([*cols, name])
         return cols
@@ -403,6 +411,26 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         if parsed is None:
             raise HTTPException(400, f"{field} is not a time (write it like 14:30)")
         return parsed
+
+
+    def _coerce_path(value: object) -> Optional[str]:
+        """The folder a note points at, or a refusal.
+
+        An empty string (or whitespace) is how you *clear* the field, not an
+        error -- the same rule the times use. Anything that is not a string is
+        refused rather than coerced: `path: [a, b]` is a typo, and picking one
+        of the two would be inventing an answer about the person's own machine.
+
+        A path that does not exist is accepted on purpose. The folder may not be
+        cloned yet, and a note is allowed to record an intention; the *read*
+        says "that folder is gone" rather than stopping you writing it down.
+        """
+        if value is None or value == "":
+            return None
+        if not isinstance(value, str):
+            raise HTTPException(400, "path must be a string (a folder path, or null)")
+        text = value.strip()
+        return text or None
 
 
     def _coerce_enum(enum_cls, value, field):
@@ -457,6 +485,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             dates=payload.dates,
             at=_coerce_time(payload.at, "at"),
             until=_coerce_time(payload.until, "until"),
+            path=_coerce_path(payload.path),
             parent_id=payload.parent_id,
             mood=payload.mood,
             pain=coerce_pain(payload.pain),
@@ -507,6 +536,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             dates=new_dates,
             at=_coerce_time(payload.get("at", existing.at), "at"),
             until=_coerce_time(payload.get("until", existing.until), "until"),
+            path=_coerce_path(payload.get("path", existing.path)),
             parent_id=payload.get("parent_id", existing.parent_id),
             # `.get(..., existing)` so an absent key keeps the value while an
             # explicit null clears it — the API could always express "no mood",
@@ -560,6 +590,10 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             month=shown,
             # The real list, so the count matches the Collections view.
             collections=list_collections(),
+            # Read here because this is where the vault is at hand, and read
+            # *every* time the dashboard is: a folder that was moved an hour ago
+            # should not still be reported as it was yesterday.
+            workspace_states=_workspace_states(notes),
         )
 
     @app.get("/api/mood")
@@ -751,6 +785,100 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         for n in created:
             vault.write(n)
         return {"created": [n.to_dict() for n in created]}
+
+    # -- workspaces ---------------------------------------------------------
+    #
+    # A note with `path:` is the home for a folder: its branch, what is
+    # uncommitted, when it was last committed, what markers the code carries.
+    # The folder is read on every request rather than cached, because a cache is
+    # a second answer that goes stale the moment you commit something.
+
+    def _workspace_states(notes) -> list[dict]:
+        """Every workspace note's folder, read now, in the order they are shown.
+
+        One reader for the view, the dashboard card and (through the note) the
+        editor panel, so the same folder cannot be described two ways.
+        """
+        now = datetime.now(timezone.utc)
+        states = []
+        for note in notes:
+            if not workspace.is_workspace_note(note):
+                continue
+            state = workspace_run.state_for_note(note, now=now)
+            if state:
+                states.append(state)
+        return workspace.sort_states(states)
+
+    @app.get("/api/workspaces")
+    def list_workspaces():
+        """Every note that points at a folder, and what that folder is *now*.
+
+        Read here rather than in the browser so the list, the editor panel and
+        the dashboard card cannot disagree -- and so a folder is read once per
+        request instead of once per place it appears.
+        """
+        states = _workspace_states(vault.list_all())
+        summary = workspace.summarize(states)
+        return {
+            "summary": summary,
+            # The sentence comes from the same place as the counts, so a card
+            # cannot say "all settled" while the counts say otherwise.
+            "line": workspace.attention_line(summary),
+            "workspaces": states,
+            "tools": workspace_run.tools(),
+        }
+
+    @app.get("/api/workspaces/{note_id}")
+    def get_workspace(note_id: str):
+        """One workspace. A note that is not one is not found, rather than
+        answered with an empty state that looks like a broken folder.
+
+        Carries `tools` too: the editor panel shows the same open buttons, and a
+        button that is disabled because the *panel* did not know what is
+        installed would be the app stating something false about this machine.
+        """
+        try:
+            note = vault.read(note_id)
+        except (KeyError, FileNotFoundError):
+            raise HTTPException(404, f"no note {note_id!r}")
+        state = workspace_run.state_for_note(note, now=datetime.now(timezone.utc))
+        if state is None:
+            raise HTTPException(404, f"note {note_id!r} does not point at a folder")
+        state["tools"] = workspace_run.tools()
+        return state
+
+    @app.post("/api/workspaces/{note_id}/open")
+    def open_workspace(note_id: str, payload: dict, request: Request):
+        """Open a workspace's folder: in your editor, a terminal, the files app.
+
+        **This is the one endpoint in the app that starts a process**, so it is
+        the one endpoint that asks for something a cross-origin page cannot send
+        without a preflight. There is no auth here and never was, which is
+        tolerable while every other endpoint only edits notes -- but a web page
+        you merely visited should not be able to launch a terminal on your
+        machine, and without this header check it could.
+
+        It reports the argv it ran, so the app can tell you what it did instead
+        of implying it.
+        """
+        if request.headers.get("x-nookboard-action") != "open":
+            raise HTTPException(
+                403, "this action needs the app's own request (X-Nookboard-Action)"
+            )
+        what = str(payload.get("what") or "").strip()
+        if what not in workspace.OPEN_ACTIONS:
+            raise HTTPException(400, f"what must be one of {list(workspace.OPEN_ACTIONS)}")
+        try:
+            note = vault.read(note_id)
+        except (KeyError, FileNotFoundError, ValueError):
+            raise HTTPException(404, f"no note {note_id!r}")
+        path = workspace.path_field(note)
+        if path is None:
+            raise HTTPException(404, f"note {note_id!r} does not point at a folder")
+        result = workspace_run.open_workspace(path, what)
+        if not result.get("ok"):
+            raise HTTPException(409, result.get("error") or "could not open it")
+        return result
 
     @app.get("/api/export.zip")
     def export_zip():

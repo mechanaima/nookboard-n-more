@@ -9,6 +9,8 @@
      5. sidebar         10. calendar         16. templates
                                              17. home dashboard + the glass
                                              18. transcribe
+                                             19. times
+                                             20. workspaces
                                              15. responsive (last, on purpose)
    The glass: one --wall on body, and every panel samples it through the glass
    tokens in section 1. Read the notes there before moving the wall.
@@ -2414,8 +2416,10 @@ textarea { resize: vertical; line-height: 1.6; }
 .h-card--mood     { grid-column: span 3; }
 .h-card--today    { grid-column: span 7; }
 .h-card--board    { grid-column: span 5; }
+.h-card--workspaces { grid-column: span 7; }
 .h-card--stats, .h-card--board { justify-content: center; }
 .h-card--today, .h-card--board { min-height: 186px; }
+.h-card--workspaces { min-height: 150px; }
 
 .h-head {
   display: flex;
@@ -2790,6 +2794,136 @@ textarea { resize: vertical; line-height: 1.6; }
 /* The entry row pushes one chip right; a time belongs beside its date, so it
    must not claim that gap for itself. */
 .date-chip--time { margin-left: 0; padding-left: 8px; color: var(--sky); }
+
+/* 20. workspaces ----------------------------------------------------------- */
+/* A note that points at a folder, and what that folder is right now: its branch,
+   what is uncommitted, when it was last committed, what markers the code still
+   carries, and the buttons that open it where it belongs. The row of facts comes
+   from app/workspace.py -- nothing here measures anything, so the card and the
+   editor panel cannot disagree about the same folder.
+
+   The honest part is the stripe down the left edge: amber when something wants
+   you, green when nothing does, red when the folder is not there. */
+
+.workspaces-view { min-height: 0; overflow-y: auto; }
+.workspaces-view.hidden { display: none; }
+
+.workspace-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  align-content: start;
+  gap: 14px;
+  margin-top: 6px;
+}
+
+.ws-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px 14px 19px;
+  overflow: hidden;
+  background: var(--glass);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+}
+.ws-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--line);
+}
+.ws-card.is-wanted::before  { background: var(--peach); }
+.ws-card.is-broken::before  { background: var(--red); }
+.ws-card.is-settled::before { background: var(--green); }
+
+.ws-card__head { display: flex; align-items: baseline; gap: 8px; }
+.ws-card__title {
+  flex: 1 1 auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 14.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.ws-card__title:hover { color: var(--lavender); }
+.ws-card__kind {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.ws-card__path {
+  margin: 0;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+.ws-card__state { margin: 2px 0 0; font-size: 12.5px; color: var(--fg); }
+.ws-card__branch,
+.ws-card__commit,
+.ws-card__langs,
+.ws-card__changed { margin: 0; font-size: 11.5px; color: var(--fg-faint); }
+.ws-card__branch { font-family: var(--font-mono); color: var(--sky); }
+.ws-card__changed { font-family: var(--font-mono); overflow-wrap: anywhere; }
+
+.ws-markers { margin-top: 6px; }
+.ws-markers__head { color: var(--fg-faint); font-family: var(--font-mono); font-size: 10.5px; }
+.ws-markers ul { margin: 3px 0 0; padding: 0; list-style: none; }
+.ws-markers li {
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.ws-markers li::before { content: "· "; color: var(--fg-faint); }
+.ws-markers__more { color: var(--fg-faint); }
+
+/* A button whose tool is missing stays visible and disabled: hiding it would
+   make the app look like it has fewer options than it has. */
+.ws-open-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 10px; }
+.ws-open {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+.ws-open:hover:not(:disabled) { color: var(--fg); border-color: var(--glass-line-hot); }
+.ws-open:disabled { opacity: .45; cursor: not-allowed; }
+
+/* The folder row on the form: a path is long, so it takes the whole width. */
+.path-row { display: flex; align-items: center; gap: 8px; }
+.path-row__field { flex: 1 1 0; min-width: 0; font-family: var(--font-mono); font-size: 12.5px; }
+
+/* The panel under it: label/value rows, because a folder has several facts. */
+.workspace-panel { display: flex; flex-direction: column; gap: 6px; }
+.ws-fact { display: flex; gap: 10px; font-size: 12px; }
+.ws-fact__key {
+  flex: 0 0 84px;
+  padding-top: 1px;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.ws-fact__value { flex: 1 1 auto; color: var(--fg); overflow-wrap: anywhere; }
 
 /* 15. responsive ---------------------------------------------------------- */
 @media (max-width: 1320px) {
