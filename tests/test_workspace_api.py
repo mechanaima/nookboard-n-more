@@ -226,6 +226,65 @@ def test_a_missing_tool_is_named_not_implied(repo, monkeypatch):
     assert "no terminal found" in response.json()["detail"]
 
 
+def test_opening_a_named_file_reports_the_argv_that_goes_there(repo, monkeypatch):
+    """A marker or a changed file name asks for a *place*. Pointed at /bin/echo
+    so nothing opens on the desktop; the contract is the reported argv."""
+    client, repo_dir = repo
+    make_workspace(client, None, str(repo_dir))
+    monkeypatch.setattr(R, "which_tool", lambda what: "/bin/echo")
+    response = client.post(
+        "/api/workspaces/ws-one/open",
+        json={"what": "editor", "file": "main.py", "line": 1},
+        headers={"X-Nookboard-Action": "open"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["ran"] == [
+        "/bin/echo", "--goto", str(repo_dir / "main.py") + ":1",
+    ]
+
+
+def test_a_file_outside_the_folder_is_refused_by_the_endpoint(repo):
+    """The endpoint is the boundary, so this is the assertion that matters: a
+    request naming something outside the workspace gets a 400, and nothing is
+    spawned. `../../etc/passwd` is the shape a page would try."""
+    client, repo_dir = repo
+    make_workspace(client, None, str(repo_dir))
+    for attempt in ["../../etc/passwd", "/etc/passwd", "../elsewhere.py", "--wait"]:
+        response = client.post(
+            "/api/workspaces/ws-one/open",
+            json={"what": "editor", "file": attempt},
+            headers={"X-Nookboard-Action": "open"},
+        )
+        assert response.status_code == 400, (attempt, response.status_code)
+        assert response.json()["detail"] == "that file is not inside this workspace"
+
+
+def test_a_file_that_is_simply_not_there_is_a_bad_request_not_a_crash(repo):
+    # Indistinguishable on purpose from the refusal above: saying which files
+    # exist and which do not is answering a question this request may not ask.
+    client, repo_dir = repo
+    make_workspace(client, None, str(repo_dir))
+    response = client.post(
+        "/api/workspaces/ws-one/open",
+        json={"what": "editor", "file": "no-such-file.py"},
+        headers={"X-Nookboard-Action": "open"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "that file is not inside this workspace"
+
+
+def test_a_line_that_is_not_a_line_is_refused(repo):
+    client, repo_dir = repo
+    make_workspace(client, None, str(repo_dir))
+    for bad in ["twelve", 0, -4, 1.5]:
+        response = client.post(
+            "/api/workspaces/ws-one/open",
+            json={"what": "editor", "file": "main.py", "line": bad},
+            headers={"X-Nookboard-Action": "open"},
+        )
+        assert response.status_code == 400, (bad, response.status_code)
+
+
 def test_the_tools_are_reported_so_the_ui_knows_which_buttons_work(repo):
     client, repo_dir = repo
     make_workspace(client, None, str(repo_dir))

@@ -2874,10 +2874,33 @@ textarea { resize: vertical; line-height: 1.6; }
 .ws-card__state { margin: 2px 0 0; font-size: 12.5px; color: var(--fg); }
 .ws-card__branch,
 .ws-card__commit,
-.ws-card__langs,
-.ws-card__changed { margin: 0; font-size: 11.5px; color: var(--fg-faint); }
+.ws-card__langs { margin: 0; font-size: 11.5px; color: var(--fg-faint); }
 .ws-card__branch { font-family: var(--font-mono); color: var(--sky); }
-.ws-card__changed { font-family: var(--font-mono); overflow-wrap: anywhere; }
+
+/* A place you can click: a changed file's name, or a marker's `file:line`. It
+   looks like the mono line it replaced -- underlined on hover -- because it is
+   the same information, now with somewhere to go. */
+.ws-changed { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; }
+.ws-place {
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-faint);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: left;
+  text-decoration-line: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: color .15s var(--ease-out), text-decoration-color .15s var(--ease-out);
+}
+.ws-place:hover { color: var(--fg); text-decoration-color: var(--glass-line-hot); }
+.ws-place:focus-visible { outline: none; color: var(--fg); text-decoration-color: var(--accent); }
+.ws-changed__more { color: var(--fg-faint); font-family: var(--font-mono); font-size: 11px; }
 
 .ws-markers { margin-top: 6px; }
 .ws-markers__head { color: var(--fg-faint); font-family: var(--font-mono); font-size: 10.5px; }
@@ -2888,6 +2911,8 @@ textarea { resize: vertical; line-height: 1.6; }
   font-size: 11px;
   overflow-wrap: anywhere;
 }
+.ws-markers .ws-place { color: var(--fg-dim); }
+.ws-markers .ws-place:hover { color: var(--fg); }
 .ws-markers li::before { content: "· "; color: var(--fg-faint); }
 .ws-markers__more { color: var(--fg-faint); }
 
@@ -2924,6 +2949,9 @@ textarea { resize: vertical; line-height: 1.6; }
   text-transform: uppercase;
 }
 .ws-fact__value { flex: 1 1 auto; color: var(--fg); overflow-wrap: anywhere; }
+/* A place inside a value row is that row's text with somewhere to go, so it
+   wears the row's colour rather than the card's dimmer one. */
+.ws-fact__value .ws-place { color: inherit; }
 
 /* 15. responsive ---------------------------------------------------------- */
 @media (max-width: 1320px) {

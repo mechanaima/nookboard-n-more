@@ -47,14 +47,13 @@ export function commitLine(state) {
   return ((state.last && state.last.subject) || "").trim();
 }
 
-//: The changed files, capped, with the count the server gave us. The list and
-//: the count come from the same read, so they cannot disagree.
-export function changedLine(state, limit = 6) {
+//: The changed files as a list, capped, with how many were left out. The names
+//: and the count come from the same read, so they cannot disagree -- and the
+//: card makes each name a place you can open, which is why this returns the list
+//: rather than only the sentence.
+export function changedFiles(state, limit = 6) {
   const files = [...(state.changed || []), ...(state.untracked || [])];
-  if (!files.length) return "";
-  const shown = files.slice(0, limit);
-  const rest = files.length - shown.length;
-  return rest > 0 ? `${shown.join("  ")}  +${rest} more` : shown.join("  ");
+  return { files: files.slice(0, limit), rest: Math.max(0, files.length - limit) };
 }
 
 //: The three buttons, and whether each can actually do anything here. A button

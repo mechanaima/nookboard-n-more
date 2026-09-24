@@ -875,9 +875,18 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         path = workspace.path_field(note)
         if path is None:
             raise HTTPException(404, f"note {note_id!r} does not point at a folder")
-        result = workspace_run.open_workspace(path, what)
+        # `file` and `line` are how a card asks for a *place* in the folder --
+        # a marker's `file:line`, or one of the changed file names. Both come
+        # from the request, so both are checked before anything is spawned:
+        # `inside_folder` refuses anything that is not a real file inside this
+        # workspace, and a refusal here is a bad request (400), not a missing
+        # thing (409) -- the request asked for something it may not have.
+        result = workspace_run.open_workspace(
+            path, what, file=payload.get("file"), line=payload.get("line")
+        )
         if not result.get("ok"):
-            raise HTTPException(409, result.get("error") or "could not open it")
+            raise HTTPException(400 if result.get("invalid") else 409,
+                                result.get("error") or "could not open it")
         return result
 
     @app.get("/api/export.zip")

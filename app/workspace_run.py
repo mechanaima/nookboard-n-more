@@ -245,8 +245,8 @@ def tools() -> dict:
     return {what: which_tool(what) for what in workspace.OPEN_ACTIONS}
 
 
-def open_workspace(path: str, what: str) -> dict:
-    """Open a folder in an editor, a terminal, or the file manager.
+def open_workspace(path: str, what: str, file=None, line=None) -> dict:
+    """Open a folder -- or one file inside it -- in an editor, terminal, or files.
 
     Returns the argv it ran so the caller can *say* what it did. Spawned
     detached and with its output discarded: this app is a server, and a child
@@ -254,13 +254,36 @@ def open_workspace(path: str, what: str) -> dict:
     opened had closed.
     """
     if what not in workspace.OPEN_ACTIONS:
-        return {"error": f"cannot open {what!r}", "ok": False}
+        return {"error": f"cannot open {what!r}", "ok": False, "invalid": True}
+    if line is not None:
+        # Only a whole number. `int(1.5)` is 1, and opening line 1 when the
+        # request said 1.5 is the app quietly going somewhere it was not asked
+        # to go -- so a float is refused rather than truncated. A digit string
+        # is accepted, because a hand-written API call is allowed to be sloppy
+        # in a way that is still unambiguous.
+        if isinstance(line, bool) or not isinstance(line, (int, str)):
+            return {"error": "line must be a whole number", "ok": False, "invalid": True}
+        try:
+            line = int(str(line).strip())
+        except ValueError:
+            return {"error": "line must be a whole number", "ok": False, "invalid": True}
+        if line < 1:
+            return {"error": "line must be 1 or more", "ok": False, "invalid": True}
+    target = None
+    if file is not None:
+        target = workspace.inside_folder(path, file)
+        if target is None:
+            # Not "not found": a request naming a file outside the folder is
+            # refused, and saying which would be answering a question the
+            # request had no business asking.
+            return {"error": "that file is not inside this workspace",
+                    "ok": False, "invalid": True}
     if not os.path.isdir(path):
         return {"error": "that folder is gone", "ok": False, "path": path}
     binary = which_tool(what)
     if not binary:
         return {"error": workspace.missing_tool_words(what), "ok": False}
-    argv = workspace.open_args(what, binary, path)
+    argv = workspace.open_args(what, binary, path, file=target, line=line)
     try:
         subprocess.Popen(
             argv,

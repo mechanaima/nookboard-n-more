@@ -20,10 +20,6 @@ BOARD_BLOCKER="render-check-blocker"
 MOOD_ID="render-check-mood"
 WS_ID="render-check-workspace"
 TODAY="$(date +%F)"
-# The checkout this script lives in: a folder that always exists, always has
-# git, and always has files -- so the workspace assertions do not depend on
-# anything on the machine except the thing being checked.
-CHECKOUT="$(cd "$(dirname "$0")/.." && pwd)"
 
 if ! curl -sf --max-time 3 "$BASE/api/health" >/dev/null; then
   echo "!! no server at $BASE — start it with 'make dev' first" >&2
@@ -38,12 +34,24 @@ HOME_DOM="$(mktemp /tmp/nookboard-home-XXXXXX.html)"
 TRANSCRIBE_DOM="$(mktemp /tmp/nookboard-transcribe-XXXXXX.html)"
 WS_DOM="$(mktemp /tmp/nookboard-ws-XXXXXX.html)"
 WS_NOTE_DOM="$(mktemp /tmp/nookboard-ws-note-XXXXXX.html)"
+# A repo made for this check, because the assertions need a state that exists
+# on no machine in particular: a real marker in a real comment, and one
+# uncommitted file. Pointing at the checkout instead would make these depend on
+# whether the person running the check happens to be mid-edit.
+WS_DIR="$(mktemp -d /tmp/nookboard-wsrepo-XXXXXX)"
+git -C "$WS_DIR" init -q -b main
+git -C "$WS_DIR" config user.email "check@localhost"
+git -C "$WS_DIR" config user.name "Render Check"
+printf '# TODO: wire the tray icon\nprint(1)\n' > "$WS_DIR/main.py"
+git -C "$WS_DIR" add -A
+git -C "$WS_DIR" commit -qm "first"
+printf 'still going\n' > "$WS_DIR/wip.py"
 cleanup() {
   for id in "$NOTE_ID" "$TARGET_ID" "$BOARD_ID" "$BOARD_BLOCKER" "$MOOD_ID" "$WS_ID"; do
     curl -s -o /dev/null -X DELETE "$BASE/api/notes/$id" || true
   done
   rm -rf "$PROFILE" "$DOM" "$BOARD_DOM" "$MOOD_DOM" "$HOME_DOM" "$TRANSCRIBE_DOM" \
-    "$WS_DOM" "$WS_NOTE_DOM"
+    "$WS_DOM" "$WS_NOTE_DOM" "$WS_DIR"
 }
 trap cleanup EXIT
 
@@ -110,13 +118,13 @@ check_absent() { # dom-file, name, extended-regex
   fi
 }
 
-# Workspace fixture: a note that points at this checkout. Reading a folder is
-# all the feature does, so pointing it at the app's own repo is safe -- and it is
-# the one folder guaranteed to be a git repo with files in it.
+# Workspace fixture: a note pointing at the small repo built above. Reading a
+# folder and opening a file in it are all this feature does, and the repo is a
+# temp directory, so nothing here can touch anything that matters.
 curl -sf -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/json' -d "{
   \"id\": \"$WS_ID\", \"collection\": \"workspaces\",
   \"title\": \"Render Check Workspace\", \"signifier\": \"note\",
-  \"status\": \"open\", \"path\": \"$CHECKOUT\"
+  \"status\": \"open\", \"path\": \"$WS_DIR\"
 }" || { echo "!! could not seed workspace fixture" >&2; exit 1; }
 
 # --- render 1: a note in the rapid log -------------------------------------
@@ -387,6 +395,13 @@ check_ws "the openers are offered"       'class="ws-open-row"'
 # real vault too, so the count has to come from the cards themselves.
 ws_cards="$(grep -oE 'class="ws-card ' "$WS_DOM" | wc -l)"
 check_count "$WS_DOM" "three openers on every card" 'class="ws-open"' $((ws_cards * 3))
+# The marker and the uncommitted file are the two places the fixture guarantees,
+# and a place is a button -- that is the whole point of the marker list.
+check_ws "the marker is listed with its place" 'main.py:1'
+check_ws "the marker keeps the words after it" 'TODO: wire the tray icon|TODO wire the tray icon'
+check_ws "the uncommitted file is listed" 'wip.py'
+check_ws "a place is a button, not a line of text" 'class="ws-place"'
+check_count "$WS_DOM" "one marker and one file are openable" 'class="ws-place"' 2
 check_ws_absent "the hero line is not left as the placeholder" 'reading the folders'
 check_ws_absent "no card claims no workspaces" 'no workspaces yet<'
 check_ws_absent "the empty state is not left under a card" 'id="workspaces-empty" class="empty-state"'
@@ -412,8 +427,10 @@ check_wsnote "the row can be cleared"        'id="note-path-clear"'
 # proves. (The id sits after the class in the markup, hence this shape.)
 check_wsnote "the panel was opened"          'class="field field--wide" id="workspace-panel-field">'
 check_wsnote "the branch fact is listed"     'class="ws-fact__key">branch<'
-check_wsnote "the folder fact names it"      "class=\"ws-fact__value\">[^<]*$(basename "$CHECKOUT")<"
+check_wsnote "the folder fact names it"      'class="ws-fact__value">[^<]*nookboard-wsrepo-[^<]*<'
 check_wsnote "the openers are offered here"  'class="ws-open-row"'
+check_wsnote "a place is a button here too"  'class="ws-place"'
+check_count "$WS_NOTE_DOM" "one marker and one file here as well" 'class="ws-place"' 2
 check_wsnote_absent "the hint is not still asking for a path" 'point this at a folder'
 check_wsnote_absent "the panel is not left hidden" 'id="workspace-panel-field" class="field field--wide" hidden'
 

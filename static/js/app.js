@@ -4,7 +4,7 @@ import { monthGrid, shiftMonth } from "./calendar.js";
 import { extractWikilinks, renderWikilinks } from "./wikilink.js";
 import { timeHint } from "./schedule.js";
 import {
-  branchLine, buttons as workspaceButtons, changedLine, commitLine,
+  branchLine, buttons as workspaceButtons, changedFiles, commitLine,
   languageLine, markerCount, markerLine, stateClass,
 } from "./workspace.js";
 import { weekKey } from "./week.js";
@@ -100,13 +100,17 @@ const api = {
   },
   // The one call that starts a process on this machine, so it carries the header
   // the server asks for -- and which a page you merely visited cannot set.
-  async openWorkspace(id, what) {
+  // `where` carries a place in the folder: a marker's {file, line}, or a changed
+  // file's {file}. The server vets it -- the file has to be a real file inside
+  // this workspace -- and answers with the argv, so the card can say what it
+  // opened rather than implying it opened anything.
+  async openWorkspace(id, what, where = {}) {
     return jsonOrThrow(await fetch(
       `/api/workspaces/${encodeURIComponent(id)}/open`,
       {
         method: "POST",
         headers: { ...JSON_HEADERS, "X-Nookboard-Action": "open" },
-        body: JSON.stringify({ what }),
+        body: JSON.stringify({ what, ...where }),
       },
     ));
   },
@@ -2571,6 +2575,44 @@ function wsOpenRow(ws, tools) {
   return row;
 }
 
+//: A place in a folder, as something you can click. Used for a marker's
+//: `file:line` and for each changed file name: both are the same act -- put me
+//: in the editor at this spot -- so they are one function, and the label is the
+//: only thing that differs.
+function wsPlace(ws, label, where) {
+  const node = document.createElement("button");
+  node.type = "button";
+  node.className = "ws-place";
+  node.textContent = label;
+  node.title = `open ${where.file}${where.line ? `:${where.line}` : ""} in the editor`;
+  node.addEventListener("click", async () => {
+    try {
+      const out = await api.openWorkspace(ws.note_id, "editor", where);
+      wsFlash(`opened: ${(out.ran || []).join(" ")}`);
+    } catch (err) {
+      wsFlash(err.message, true);
+    }
+  });
+  return node;
+}
+
+function wsChanged(ws, limit) {
+  const { files, rest } = changedFiles(ws, limit);
+  if (!files.length) return null;
+  const box = document.createElement("div");
+  box.className = "ws-changed";
+  for (const name of files) {
+    box.append(wsPlace(ws, name, { file: name }));
+  }
+  if (rest > 0) {
+    const more = document.createElement("span");
+    more.className = "ws-changed__more";
+    more.textContent = `+${rest} more`;
+    box.append(more);
+  }
+  return box;
+}
+
 function wsMarkers(ws, limit) {
   const markers = ws.markers || [];
   if (!markers.length) return null;
@@ -2583,8 +2625,9 @@ function wsMarkers(ws, limit) {
   const list = document.createElement("ul");
   for (const marker of markers.slice(0, limit)) {
     const li = document.createElement("li");
-    // `file:line` first: it is the part you can act on.
-    li.textContent = markerLine(marker);
+    // `file:line` first: it is the part you can act on, and now it is the part
+    // you can click -- a marker is a place in the code, so it goes there.
+    li.append(wsPlace(ws, markerLine(marker), { file: marker.file, line: marker.line }));
     list.append(li);
   }
   if (markers.length > limit) {
@@ -2651,13 +2694,8 @@ function workspaceCard(ws) {
     card.append(l);
   }
 
-  const changed = changedLine(ws);
-  if (changed) {
-    const c = document.createElement("p");
-    c.className = "ws-card__changed";
-    c.textContent = changed;
-    card.append(c);
-  }
+  const changed = wsChanged(ws, 6);
+  if (changed) card.append(changed);
 
   const markers = wsMarkers(ws, 3);
   if (markers) card.append(markers);
@@ -2732,11 +2770,14 @@ async function renderWorkspacePanel() {
   state.workspaceTools = wsState.tools || state.workspaceTools || {};
 
   const rows = [];
+  // A value is a string, or nodes when the fact is a set of places you can open.
+  // The changed files are buttons here for the same reason they are on the card:
+  // it is the same fact, and the panel is not allowed to read it differently.
   const facts = [
     ["folder", wsState.display_path || wsState.path],
     ["branch", wsState.is_repo ? branchLine(wsState) : "not a git repo"],
     ["last commit", commitLine(wsState)],
-    ["uncommitted", changedLine(wsState) || "nothing"],
+    ["uncommitted", wsChanged(wsState, 6) || "nothing"],
     ["languages", languageLine(wsState.languages) || "no code files"],
   ];
   for (const [label, value] of facts) {
@@ -2747,7 +2788,8 @@ async function renderWorkspacePanel() {
     k.textContent = label;
     const v = document.createElement("span");
     v.className = "ws-fact__value";
-    v.textContent = value || "—";
+    if (value instanceof Node) v.append(value);
+    else v.textContent = value || "—";
     row.append(k, v);
     rows.push(row);
   }

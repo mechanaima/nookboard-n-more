@@ -103,7 +103,7 @@ Design decisions worth knowing before you edit it:
 The UI is checked headlessly, not by eyeball alone:
 
 ```bash
-./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 145 DOM assertions
+./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 152 DOM assertions
 ./tools/shot.sh /tmp/shot.png 'http://127.0.0.1:8765/'        # screenshot
 ./tools/contrast.sh 'http://127.0.0.1:8765/#/view/board' .card__chip
 ```
@@ -738,6 +738,15 @@ with the argv it ran. The endpoint is bound to localhost and requires the app's
 own header, so a page you merely visit cannot launch a terminal on your machine.
 A button whose tool is missing stays visible, disabled, and says which tool.
 
+**A marker is a place you can go.** Each marker and each changed file name on a
+card is a button: it opens that spot in the editor (`--goto file:line`). It looks
+like the monospace line it replaced — underlined on hover, nothing else — because
+it is the same information with somewhere to go. The `file` in that request comes
+from the page, so the app opens it only when it resolves to a real file strictly
+inside the workspace's own folder: `../../etc/passwd` and `--wait` are refused
+outright, not trimmed into something openable, and a refusal is a `400` rather
+than a "not found" — the request asked for something it may not have.
+
 **Honest scope: a workspace is a link plus a state line, not a second IDE.**
 There is no file tree, no editor, no embedded terminal, no code search index and
 no GitHub sync. Those exist, and they are better at being themselves than this
@@ -961,7 +970,7 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 657 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 668 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),
@@ -977,8 +986,9 @@ make test        # 657 pytest — model, vault, obsidian, foreign-vault, db, api
                  #              lateness, the YAML shapes a hand-written file
                  #              can hold),
                  #              workspace (what a folder is: git reads, nesting,
-                 #              ages, markers, the openers' argv) and the workspace
-                 #              API (the refusals: no header, bad tool, gone folder)
+                 #              ages, markers, what may be opened and where) and
+                 #              the workspace API (the refusals: no header, bad
+                 #              tool, gone folder, a file from outside)
 make test-js     # 165 node:test — rapid-log parsing, calendar maths, wikilinks,
                  #              ISO week labels, display helpers, board helpers,
                  #              mood grid helpers, query fences (finding them,
@@ -990,7 +1000,7 @@ make test-js     # 165 node:test — rapid-log parsing, calendar maths, wikilink
                  #              a disabled opener that names its missing tool), and
                  #              that every local import exists
 make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
-./tools/check_render.sh   # 145 DOM assertions in headless Chromium
+./tools/check_render.sh   # 152 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether

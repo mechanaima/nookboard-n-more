@@ -6,7 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  branchLine, buttons, changedLine, commitLine, languageLine, markerCount,
+  branchLine, buttons, changedFiles, commitLine, languageLine, markerCount,
   markerLine, stateClass,
 } from "./workspace.js";
 
@@ -68,17 +68,23 @@ test("languages are listed biggest first and the tail is counted", () => {
   assert.equal(languageLine(null), "");
 });
 
-test("the changed files are one line, capped, with the rest counted", () => {
-  const files = { changed: ["a.py", "b.py"], untracked: ["c.py"] };
-  assert.equal(changedLine(files), "a.py  b.py  c.py");
-  assert.equal(changedLine({ changed: [], untracked: [] }), "");
-  assert.equal(
-    changedLine({ changed: ["a", "b", "c", "d", "e", "f", "g"], untracked: [] }, 6),
-    "a  b  c  d  e  f  +1 more",
-  );
-  // a repo with a lot of uncommitted work still reads as one line
-  const many = Array.from({ length: 40 }, (_, i) => `f${i}.py`);
-  assert.match(changedLine({ changed: many, untracked: [] }), /\+34 more$/);
+test("the changed files are a capped list, and the cap is counted", () => {
+  // Tracked and untracked together, because "what is uncommitted here" is one
+  // question -- and each name is a place the card can open, which is why this
+  // returns the list rather than a sentence about it.
+  const state = { changed: ["a.py", "b.py"], untracked: ["c.py", "d.py"] };
+  assert.deepEqual(changedFiles(state, 3), { files: ["a.py", "b.py", "c.py"], rest: 1 });
+  assert.deepEqual(changedFiles(state, 99), {
+    files: ["a.py", "b.py", "c.py", "d.py"], rest: 0,
+  });
+  // Nothing uncommitted is not a list of nothing: it is no list at all
+  assert.deepEqual(changedFiles({}), { files: [], rest: 0 });
+  assert.deepEqual(changedFiles({ changed: [], untracked: [] }), { files: [], rest: 0 });
+  // A repo with a lot of work in it does not make 40 buttons
+  const many = { changed: Array.from({ length: 40 }, (_, i) => `f${i}.py`), untracked: [] };
+  const capped = changedFiles(many);
+  assert.equal(capped.files.length, 6);
+  assert.equal(capped.rest, 34);
 });
 
 test("a button is disabled when its tool is missing, and says which tool", () => {

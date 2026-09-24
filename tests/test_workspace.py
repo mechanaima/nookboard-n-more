@@ -482,6 +482,101 @@ def test_the_summary_line_is_honest_when_there_is_nothing_to_report():
     assert W.summarize([])["total"] == 0
 
 
+# ---------------------------------------------- opening a place in a folder
+
+
+def _tree(tmp_path):
+    """A small real tree: something inside the folder, something outside it."""
+    root = tmp_path / "project"
+    (root / "app").mkdir(parents=True)
+    (root / "app" / "main.py").write_text("x = 1\n")
+    (root / "README.md").write_text("hi\n")
+    outside = tmp_path / "elsewhere.py"
+    outside.write_text("nope\n")
+    return root, outside
+
+
+def test_a_real_file_inside_the_folder_is_the_only_thing_openable(tmp_path):
+    root, _ = _tree(tmp_path)
+    assert W.inside_folder(str(root), "app/main.py") == str(root / "app" / "main.py")
+    assert W.inside_folder(str(root), "README.md") == str(root / "README.md")
+    # A trailing newline or space is somebody's copy-paste, not a different file.
+    assert W.inside_folder(str(root), " README.md ") == str(root / "README.md")
+
+
+def test_a_path_out_of_the_folder_is_refused_rather_than_sanitized(tmp_path):
+    """The load-bearing one.
+
+    `file` arrives from a request, which means it arrives from a card, which
+    means it arrives from whatever is in the request. The app is not a file
+    browser: the only thing it will open is a real file inside this folder, and
+    each of these is refused outright -- not trimmed into something openable,
+    because a sanitized path is still a request choosing a file.
+    """
+    root, outside = _tree(tmp_path)
+    for attempt in [
+        "../elsewhere.py",
+        "../../etc/passwd",
+        "/etc/passwd",
+        str(outside),               # absolute, real, and not ours
+        "app/../../elsewhere.py",
+        "app/../../../etc/hosts",
+        "~/.ssh/id_rsa",
+    ]:
+        assert W.inside_folder(str(root), attempt) is None, attempt
+
+
+def test_an_option_flag_is_not_a_file(tmp_path):
+    root, _ = _tree(tmp_path)
+    # `--wait` is an argument, not a path, and naming it as a "file" is the one
+    # way a validated-looking value still becomes a flag on the argv.
+    assert W.inside_folder(str(root), "--wait") is None
+    assert W.inside_folder(str(root), "-g") is None
+    assert W.inside_folder(str(root), " --goto") is None
+
+
+def test_a_sibling_folder_sharing_the_prefix_is_not_inside(tmp_path):
+    """`startswith(root)` on its own lets `project-notes` through; the separator
+    is what makes "inside" mean inside."""
+    root, _ = _tree(tmp_path)
+    sibling = tmp_path / "project-notes"
+    sibling.mkdir()
+    (sibling / "secret.py").write_text("x\n")
+    assert W.inside_folder(str(root), "../project-notes/secret.py") is None
+
+
+def test_a_folder_is_not_a_file_to_open(tmp_path):
+    root, _ = _tree(tmp_path)
+    for attempt in ["app", ".", "", "   ", None, 12, {"file": "x"}]:
+        assert W.inside_folder(str(root), attempt) is None, attempt
+
+
+def test_the_editor_is_told_where_to_put_the_cursor():
+    assert W.editor_args("/usr/bin/code", "/tmp/p", file="/tmp/p/a.py", line=12) == [
+        "/usr/bin/code", "--goto", "/tmp/p/a.py:12",
+    ]
+    assert W.editor_args("/usr/bin/code", "/tmp/p", file="/tmp/p/a.py") == [
+        "/usr/bin/code", "--goto", "/tmp/p/a.py",
+    ]
+    assert W.editor_args("/usr/bin/code", "/tmp/p") == ["/usr/bin/code", "/tmp/p"]
+
+
+def test_a_terminal_takes_the_folder_and_ignores_the_file():
+    """A file name means nothing to a terminal. It is ignored rather than
+    refused, and the argv the server reports is what keeps that from being a
+    silent difference between what was asked and what ran."""
+    assert W.open_args("terminal", "/usr/bin/alacritty", "/tmp/p",
+                       file="/tmp/p/a.py", line=3) == [
+        "/usr/bin/alacritty", "--working-directory", "/tmp/p",
+    ]
+    assert W.open_args("files", "/usr/bin/xdg-open", "/tmp/p", file="/tmp/p/a.py") == [
+        "/usr/bin/xdg-open", "/tmp/p/a.py",
+    ]
+    assert W.open_args("files", "/usr/bin/xdg-open", "/tmp/p") == [
+        "/usr/bin/xdg-open", "/tmp/p",
+    ]
+
+
 # ------------------------------------------------------------- opening a folder
 
 

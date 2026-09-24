@@ -534,8 +534,46 @@ FILE_CANDIDATES = ("xdg-open",)
 OPEN_ACTIONS = ("editor", "terminal", "files")
 
 
-def editor_args(binary: str, path: str) -> list[str]:
-    """Open a folder in an editor. Every editor here takes the path plainly."""
+def inside_folder(folder: str, relpath) -> str | None:
+    """The file inside a folder that a request asked to open, or `None`.
+
+    A card sends `file` to say *which* file to look at, which means the value
+    comes from the request -- so the only paths this app will ever open are ones
+    that resolve to a real file strictly inside the workspace's own folder.
+    `../../etc/passwd` and `/etc/passwd` are refused rather than sanitized: a
+    sanitized path is still a request choosing a file, and the honest thing is to
+    say no.
+
+    A leading `-` is refused too. `code --wait` is an argument, not a file, and
+    reaching it by naming a "file" is the one way a validated-looking path can
+    still become an option flag.
+    """
+    if not isinstance(relpath, str):
+        return None
+    candidate = relpath.strip()
+    if not candidate or candidate.startswith("-"):
+        return None
+    root = os.path.realpath(folder)
+    joined = os.path.realpath(os.path.join(root, candidate))
+    # `!= root` on its own would allow the folder itself; `startswith(root)` on
+    # its own would allow a sibling named like `nookboard-notes`.
+    if joined != root and not joined.startswith(root + os.sep):
+        return None
+    if joined == root or not os.path.isfile(joined):
+        return None
+    return joined
+
+
+def editor_args(binary: str, path: str, file: str | None = None,
+                line: int | None = None) -> list[str]:
+    """Open a folder -- or one file in it -- in an editor.
+
+    `--goto FILE:LINE` is how the editors on this list are told to put the
+    cursor somewhere, and it is the same flag for all of them, which is the only
+    reason it is safe to have one shape here.
+    """
+    if file:
+        return [binary, "--goto", f"{file}:{line}" if line else file]
     return [binary, path]
 
 
@@ -562,14 +600,21 @@ def file_args(binary: str, path: str) -> list[str]:
     return [binary, path]
 
 
-def open_args(what: str, binary: str, path: str) -> list[str]:
-    """The argv for one open action. Unknown actions are refused, not guessed."""
+def open_args(what: str, binary: str, path: str, file: str | None = None,
+              line: int | None = None) -> list[str]:
+    """The argv for one open action. Unknown actions are refused, not guessed.
+
+    `file` is an absolute path already checked by `inside_folder` -- this
+    function builds argv, it does not vet anything. A terminal ignores it on
+    purpose: a terminal is opened *at* a folder, and the argv the server reports
+    is what makes that visible rather than silent.
+    """
     if what == "editor":
-        return editor_args(binary, path)
+        return editor_args(binary, path, file=file, line=line)
     if what == "terminal":
         return terminal_args(binary, path)
     if what == "files":
-        return file_args(binary, path)
+        return file_args(binary, file or path)
     raise ValueError(f"cannot open {what!r}")
 
 
