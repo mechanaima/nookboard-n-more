@@ -86,6 +86,7 @@ const api = {
 
   // -- mood + pain
   async mood(days = 365)     { return jsonOrThrow(await fetch(`/api/mood?days=${days}`)); },
+  async insight()            { return jsonOrThrow(await fetch("/api/insight")); },
   async notesOn(isoDate)     { return jsonOrThrow(await fetch(`/api/notes?date=${encodeURIComponent(isoDate)}`)); },
 };
 
@@ -1297,6 +1298,69 @@ async function renderMood() {
   paintMoodHeatmap(payload);
   paintMoodDistribution(payload);
   paintMoodRecent(payload.days);
+  await paintInsight();
+}
+
+// Pain against finished work. Deliberately reads as its own sentence rather
+// than a number: the payload refuses to claim a correlation below its minimum
+// sample, and the honest rendering of that is the sentence, not a blank.
+async function paintInsight() {
+  const reading = $("#insight-reading");
+  const host = $("#insight-bands");
+  const caveat = $("#insight-caveat");
+  let got;
+  try {
+    got = (await api.insight()).pain_vs_output;
+  } catch (err) {
+    reading.textContent = `could not work this out yet: ${err.message}`;
+    host.innerHTML = "";
+    caveat.textContent = "";
+    return;
+  }
+
+  reading.textContent = got.reading.text;
+  caveat.textContent = got.caveat;
+
+  host.innerHTML = "";
+  if (!got.bands.length) {
+    const li = document.createElement("li");
+    li.className = "insight-empty";
+    li.textContent = "No day has both a pain reading and anything finished yet.";
+    host.appendChild(li);
+    return;
+  }
+
+  // Bars are relative to the best band, so the shape is readable without
+  // implying a scale the numbers do not have.
+  const widest = Math.max(...got.bands.map((b) => b.mean_completed), 1);
+  for (const row of got.bands) {
+    const li = document.createElement("li");
+    li.className = "insight-band";
+
+    const label = document.createElement("span");
+    label.className = "insight-band-label";
+    label.textContent = `${row.low}\u2013${row.high}`;
+
+    const track = document.createElement("span");
+    track.className = "insight-band-bar";
+    const fill = document.createElement("i");
+    fill.style.width = `${Math.round((row.mean_completed / widest) * 100)}%`;
+    track.appendChild(fill);
+
+    const value = document.createElement("span");
+    value.className = "insight-band-value";
+    value.textContent = row.mean_completed;
+
+    const days = document.createElement("span");
+    days.className = "insight-band-days";
+    days.textContent = `${row.days}d`;
+
+    li.append(label, track, value, days);
+    li.title =
+      `pain ${row.low}\u2013${row.high} (${row.band}): ` +
+      `${row.mean_completed} finished on an average day, across ${row.days} days`;
+    host.appendChild(li);
+  }
 }
 
 function paintMoodLog(payload) {

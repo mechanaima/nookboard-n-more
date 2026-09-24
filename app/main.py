@@ -26,6 +26,7 @@ from .models import (
     MOOD_LEVELS, PAIN_MAX, PAIN_MIN, STAGE_LABELS, Note, Signifier, Stage, Status,
     coerce_pain, is_daily_note_id, reconcile, stage_for_status, stamp_completed,
 )
+from . import insight
 from . import mood as moodlib
 from .vault import Vault
 from .db import Database
@@ -380,6 +381,16 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
     def delete_note(note_id: str):
         vault.delete(note_id)
         return None
+
+    @app.get("/api/insight")
+    def insights():
+        """What the vault knows but no single feature does.
+
+        Kept separate from /api/mood rather than folded into it: this is the
+        joining of two features, and it has to be able to go quiet on its own
+        when there is not enough evidence to say anything.
+        """
+        return {"pain_vs_output": insight.pain_vs_output(vault.list_all())}
 
     @app.get("/api/mood")
     def mood_series(

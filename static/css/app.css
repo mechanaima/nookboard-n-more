@@ -2045,6 +2045,50 @@ textarea { resize: vertical; line-height: 1.6; }
    track escapes the same fate only because its parent is a grid, which
    blockifies its children.) */
 .mood-dist-fill { display: block; height: 100%; border-radius: 4px; }
+
+/* Pain against finished work. Drawn as a small bar chart because the real
+   content is the *shape* across bands at wildly different sample sizes, and a
+   table of bare means hides exactly that. */
+.mood-insight { margin-top: 14px; }
+.insight-reading {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  max-width: 74ch;
+}
+.insight-bands { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.insight-band {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 32px 32px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.insight-band-label { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.insight-band-bar {
+  display: block;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--mauve) 14%, transparent);
+}
+.insight-band-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 5px;
+  background: linear-gradient(90deg, var(--teal), var(--mauve));
+}
+.insight-band-value { color: var(--fg); font-variant-numeric: tabular-nums; text-align: right; }
+.insight-band-days { color: var(--fg-faint); font-variant-numeric: tabular-nums; text-align: right; }
+.insight-empty { color: var(--fg-faint); font-size: 12px; font-style: italic; }
+.insight-caveat {
+  margin: 10px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-faint);
+  max-width: 74ch;
+}
 .mood-dist-count { text-align: right; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
 
 /* 15. responsive ---------------------------------------------------------- */

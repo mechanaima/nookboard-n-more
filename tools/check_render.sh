@@ -234,6 +234,15 @@ check_mood "weekday labels rendered"       'class="mood-daycol"'
 check_mood "recent days panel filled"      'class="mood-recent-date"|class="mood-empty"'
 check_mood "scroll affordance present"     'id="mood-scroll-hint"'
 
+# The insight panel joins two features (finished work and pain), so it has two
+# legitimate states and the assertions must hold in both: bands when there are
+# enough paired days, the "not enough yet" sentence when there are not. The
+# caveat is the invariant worth pinning -- it is what stops the sentence being
+# read as a diagnosis, so it must never be the thing that quietly goes missing.
+check_mood "insight reading present"        'id="insight-reading"'
+check_mood "insight caveat refuses cause"   'not a cause'
+check_mood "insight says something"         'class="insight-band"|class="insight-empty"|Not enough to go on'
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

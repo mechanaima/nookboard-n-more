@@ -124,6 +124,8 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
   a distribution (see [Mood & pain](#mood--pain))
 - **Daily notes** — an end-of-day recap of what you actually finished, written
   into that day's own note (see [Daily notes](#daily-notes))
+- **Insight** — pain against what you actually finish, from the two datasets
+  the vault already holds (see [Insight](#insight))
 - **Collections** — NeatNook-style curation, create + filter
 - **Timeline** — Agenda-style date-filter view
 - **Calendar** — month grid with per-day counts, click-through
@@ -236,6 +238,49 @@ Decisions worth knowing before you edit any of it:
   next save would be data loss, so filtering to the five known levels happens
   when the series is *plotted*, never when a note is parsed.
 
+## Insight
+
+Pain is logged on the days it is felt and tasks are finished on the days there
+is capacity for them. Both live in the same Markdown files, written by the same
+app, and nothing had ever looked at them together — so this is the one question
+a notes app cannot answer and this one can: **does the work happen on the good
+days?**
+
+It is most of the difficulty of this feature that the honest answer is usually
+"not yet", so that is what it says:
+
+- **Below eight paired days it states no relationship at all.** With five, the
+  coefficient swings on a single unusual day. The bands are still shown, because
+  "on days logged at this pain, this much got finished" needs no statistics —
+  only the correlation is withheld.
+- **Only days from the first stamped completion onward are paired.** Completion
+  dates did not exist before that field shipped, so counting earlier days as
+  "nothing finished" would line old high-pain days up against zero output and
+  manufacture the very relationship being looked for.
+- **A logged day with nothing finished is still a pair.** That is half the
+  signal; filtering to the productive days would remove it.
+- **Rank correlation, not Pearson.** The question is whether worse days mean
+  less output, which is about order. Pain 3→4 need not be the same step as
+  7→8, and nothing assumes it is.
+- **The caveat ships in the payload, not the UI.** It is association, not cause:
+  this cannot say whether pain reduced the work or the work worsened the pain,
+  and it says nothing about days that went unlogged. Keeping it server-side stops
+  it being dropped for looking untidy.
+
+```bash
+GET /api/insight
+```
+
+```json
+{"pain_vs_output": {
+  "days_paired": 44, "min_days": 8, "since": "2026-07-26", "rho": -0.869,
+  "bands": [{"band": "mild", "low": 0, "high": 2, "days": 13,
+             "mean_completed": 4.8, "total_completed": 62}],
+  "reading": {"strength": "strong", "direction": "negative",
+              "text": "Across 44 days, more gets finished on lower-pain days (strong relationship)."},
+  "caveat": "This is a pattern in what was written down, not a cause. ..."}}
+```
+
 ## Daily notes
 
 Finish a task and it is stamped with the day you finished it. After your cutoff
@@ -314,8 +359,10 @@ Configuration: `NOOKBOARD_DAILY_SUMMARY_HOUR` (default `22`, `-1` disables).
 - `GET    /api/search?q=`
 - `GET    /api/mood?days=&start=&end=` → a collapsed record per logged day, plus
   `summary` (days logged, streak, averages, counts) and the level vocabulary
-- `GET    /api/daily` → days owed a summary now, days already summarised, and the
-  scheduler's last error
+- `GET    /api/insight` → `pain_vs_output`: the paired days, mean finished per
+  pain band, the rank correlation, and the caveat
+- `GET    /api/daily` → days owed a summary now, days already summarised, any
+  day waiting on a recap under `retrying`, and the scheduler's last error
 - `GET    /api/daily/{day}` → what that day's note holds and what it is owed
 - `POST   /api/daily/summary` `{date?, refresh?}` → write the day's recap
 - `GET    /api/calendar/{year}/{month}` → `{"YYYY-MM-DD": count, ...}`
@@ -451,7 +498,7 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 290 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 307 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),
