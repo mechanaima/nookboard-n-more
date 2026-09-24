@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Iterable
 
 import sqlite3
@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS notes (
     stage       TEXT,
     blocked_by_csv TEXT NOT NULL DEFAULT '',
     position    REAL,
+    completed   TEXT,
     search_text TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notes_collection ON notes(collection);
@@ -46,6 +47,10 @@ CREATE TABLE IF NOT EXISTS note_links (
     target_title TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_links_target ON note_links(target_title);
+CREATE TABLE IF NOT EXISTS daily_summary_state (
+    day          TEXT PRIMARY KEY,
+    generated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS recurrence_state (
     note_id  TEXT PRIMARY KEY,
     last_run TEXT NOT NULL
@@ -61,6 +66,7 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("blocked_by_csv", "TEXT NOT NULL DEFAULT ''"),
     ("position", "REAL"),
     ("pain", "INTEGER"),
+    ("completed", "TEXT"),
 )
 
 
@@ -101,8 +107,8 @@ class Database:
             INSERT INTO notes (id, collection, title, body, signifier, status,
                                dates_csv, parent_id, created, mood, pain, tags_csv,
                                recurrence, stage, blocked_by_csv, position,
-                               search_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               completed, search_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 collection=excluded.collection,
                 title=excluded.title,
@@ -119,6 +125,7 @@ class Database:
                 stage=excluded.stage,
                 blocked_by_csv=excluded.blocked_by_csv,
                 position=excluded.position,
+                completed=excluded.completed,
                 search_text=excluded.search_text
             """,
             (
@@ -128,6 +135,7 @@ class Database:
                 n.parent_id, n.created.isoformat(),
                 n.mood, n.pain, tags_csv, n.recurrence,
                 n.stage, ",".join(n.blocked_by), n.position,
+                n.completed.isoformat() if n.completed else None,
                 search_text,
             ),
         )
@@ -196,6 +204,29 @@ class Database:
             (title,),
         ).fetchall()
         return [self._row_to_note(r) for r in rows]
+
+    # -- daily summaries ---------------------------------------------------
+    # A run at 22:00 has to happen exactly once. `pending_days` cannot tell the
+    # difference between "owed" and "owed again", so the fact is recorded here
+    # rather than inferred: without it, every tick would spend a model call and
+    # rewrite the note for the rest of the evening.
+
+    def mark_daily_generated(self, day: str, at: datetime | None = None) -> None:
+        self.conn.execute(
+            "INSERT INTO daily_summary_state (day, generated_at) VALUES (?, ?) "
+            "ON CONFLICT(day) DO UPDATE SET generated_at=excluded.generated_at",
+            (day, (at or datetime.now()).isoformat(timespec="seconds")),
+        )
+        self.conn.commit()
+
+    def daily_generated_days(self) -> set[str]:
+        rows = self.conn.execute("SELECT day FROM daily_summary_state").fetchall()
+        return {row["day"] for row in rows}
+
+    def clear_daily_generated(self, day: str) -> None:
+        """Forget that a day was summarised, so a forced refresh can re-run it."""
+        self.conn.execute("DELETE FROM daily_summary_state WHERE day = ?", (day,))
+        self.conn.commit()
 
     def run_recurring(self, today: date) -> list[Note]:
         """For each note with recurrence, instantiate due dates up to `today`.
@@ -275,6 +306,7 @@ class Database:
             stage=row["stage"],
             blocked_by=blocked_by,
             position=row["position"],
+            completed=date.fromisoformat(row["completed"]) if row["completed"] else None,
         )
 
 

@@ -46,6 +46,9 @@ class Settings:
     llm_model: str
     llm_max_tokens: int
     llm_timeout: float
+    #: Hour (0-23) the end-of-day summary runs, or -1 to switch the scheduler
+    #: off entirely. One hour, not a cron expression: see daily.is_due.
+    daily_summary_hour: int = 22
 
     @property
     def llm_chat_url(self) -> str:
@@ -63,4 +66,5 @@ def load_settings() -> Settings:
         # roughly 1400 tokens, links has exceeded 2048 and needed more.
         llm_max_tokens=_env_int("NOOKBOARD_LLM_MAX_TOKENS", 4096),
         llm_timeout=_env_float("NOOKBOARD_LLM_TIMEOUT", 300.0),
+        daily_summary_hour=_env_int("NOOKBOARD_DAILY_SUMMARY_HOUR", 22),
     )

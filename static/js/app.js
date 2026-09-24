@@ -4,7 +4,7 @@ import { monthGrid, shiftMonth } from "./calendar.js";
 import { extractWikilinks, renderWikilinks } from "./wikilink.js";
 import {
   STAGES, blockedLabel, blocksLabel, completionWarning, depCandidates,
-  dropBeforeId, resolveTaskRef, shiftStage, stageIndex, summaryText,
+  dropBeforeId, isOpenTask, resolveTaskRef, shiftStage, stageIndex, summaryText,
 } from "./board.js";
 import {
   signifierGlyph, moodEmoji, statusLabel, escapeHtml,
@@ -1610,9 +1610,54 @@ function aiStopTimer() {
 }
 
 function aiSetBusy(busy) {
-  ["#ai-summarize", "#ai-tags", "#ai-links"].forEach((sel) => { $(sel).disabled = busy; });
+  ["#ai-summarize", "#ai-tags", "#ai-links", "#ai-day-recap"].forEach((sel) => {
+    $(sel).disabled = busy;
+  });
   $("#ai-stop").classList.toggle("hidden", !busy);
   $("#ai-ask-input").disabled = busy;
+}
+
+// Write the day's recap and jump to the day's note.
+//
+// Deliberately not a stream: the recap is written into a file and the response
+// is a small result, so the model's progress is not what the user waits on --
+// the note appearing is. The day comes from the open note, so "recap this day"
+// means the day that note belongs to, not necessarily today.
+async function runDayRecap() {
+  const note = state.notes.find((n) => n.id === state.activeId);
+  if (!note) return aiSetStatus("open a note first", "error");
+  const day = (note.dates && note.dates[0]) || note.created;
+  if (!day) return aiSetStatus("that note has no date to recap", "error");
+
+  aiAbort();
+  aiReset();
+  aiSetBusy(true);
+  aiSetStatus(`writing the recap for ${day}…`, "busy");
+  try {
+    const res = await fetch("/api/daily/summary", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ date: day, refresh: true }),
+    });
+    if (!res.ok) throw new Error(`recap failed (${res.status})`);
+    const out = await res.json();
+    if (!out.wrote) {
+      aiSetStatus(`nothing was completed on ${day}`, "");
+      return;
+    }
+    await refresh();
+    await openEditor(out.note_id);
+    aiSetStatus(
+      out.recap_error
+        ? `wrote ${out.completed} task(s) for ${day}; no recap — the model was unavailable`
+        : `recapped ${out.completed} task(s) for ${day}`,
+      out.recap_error ? "error" : ""
+    );
+  } catch (err) {
+    aiSetStatus(err.message, "error");
+  } finally {
+    aiSetBusy(false);
+  }
 }
 
 function aiReset() {
@@ -1923,6 +1968,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (!state.activeId) return aiSetStatus("open a note first", "error");
     aiRun("/api/ai/tags", { id: state.activeId }, "tags");
   });
+  // Not a stream: the recap is written to a file, so it fits none of the
+  // streaming handlers above and needs its own path.
+  $("#ai-day-recap").addEventListener("click", runDayRecap);
+
   $("#ai-links").addEventListener("click", () => {
     if (!state.activeId) return aiSetStatus("open a note first", "error");
     aiRun("/api/ai/links", { id: state.activeId }, "links");

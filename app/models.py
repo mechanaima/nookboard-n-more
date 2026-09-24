@@ -72,6 +72,25 @@ def stage_for_status(status: Status) -> Stage:
     return Stage.TODO
 
 
+def stamp_completed(
+    previous: Optional[date],
+    *,
+    complete: bool,
+    today: Optional[date] = None,
+) -> Optional[date]:
+    """The day a note was finished, maintained across edits.
+
+    A completion date has to survive ordinary editing: re-saving a finished
+    task, renaming it, or dragging its card around the board must not move the
+    work to today. So an existing date is kept for as long as the note stays
+    complete, and only a *fresh* completion -- after being reopened -- gets a
+    new one. Reopening clears it, which is what makes that distinction possible.
+    """
+    if not complete:
+        return None
+    return previous or (today or date.today())
+
+
 def reconcile(stage: Optional[str], status: Status) -> tuple[Optional[str], Status]:
     """Stop the board column and the BuJo status from contradicting each other.
 
@@ -170,6 +189,15 @@ class Note:
     blocked_by: list[str] = field(default_factory=list)
     # Explicit order within its column. None sorts last, by creation date.
     position: Optional[float] = None
+    #: The day this note was finished. Stamped when a note *becomes* complete,
+    #: kept while it stays complete, and cleared when it is reopened so a task
+    #: finished twice reports the second time. Only Status.COMPLETE stamps it:
+    #: a struck-through note sits in the Done column but was abandoned, not
+    #: completed, and counting it would make a summary of the day's work lie.
+    #: Tasks completed before this field existed simply have no date -- a status
+    #: flag cannot be turned back into a day, and guessing one from the file's
+    #: mtime would attribute work to days it never happened on.
+    completed: Optional[date] = None
     # Where this note lives in the vault, relative to the vault root. Set by
     # Vault on read so writes return to the same file. Never persisted to
     # frontmatter, and excluded from equality so round-trip tests are unaffected.
@@ -193,6 +221,7 @@ class Note:
             "stage": self.stage,
             "blocked_by": list(self.blocked_by),
             "position": self.position,
+            "completed": self.completed.isoformat() if self.completed else None,
         }
         # Obsidian resolves [[Title]] by filename or alias, never by our
         # `title:` field, so record the title as an alias to make the same
@@ -258,6 +287,11 @@ class Note:
         except (TypeError, ValueError):
             position = None
 
+        try:
+            completed = date.fromisoformat(str(meta["completed"])) if meta.get("completed") else None
+        except ValueError:
+            completed = None
+
         return cls(
             id=stem,
             collection=str(meta.get("collection") or "inbox"),
@@ -275,6 +309,7 @@ class Note:
             stage=stage,
             blocked_by=blocked_by,
             position=position,
+            completed=completed,
         )
 
     def to_dict(self) -> dict:
@@ -287,4 +322,6 @@ class Note:
         d["stage"] = self.stage or stage_for_status(self.status).value
         d["dates"] = [x.isoformat() for x in self.dates]
         d["created"] = self.created.isoformat()
+        # asdict() leaves these as date objects, which are not JSON.
+        d["completed"] = self.completed.isoformat() if self.completed else None
         return d

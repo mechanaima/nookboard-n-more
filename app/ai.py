@@ -1,11 +1,16 @@
 """AI features on top of a local llama.cpp server.
 
-Four things, all streaming, all local:
+Five things, all local:
 
   summarize   a short markdown summary of the open note
   tags        tag suggestions, filtered against tags the note already has
   links       wiki link suggestions drawn from titles that already exist
   ask         a question answered from the notes most relevant to it
+  daily       a recap of a day's finished work, for the day's own note
+
+The first four stream to the browser. `daily` does not: it is usually run by the
+scheduler with nobody watching, and it has to write its result to a file rather
+than hand it to a client.
 
 `ask` does NOT use embeddings. Retrieval is term-overlap scoring over the
 vault, which is honest about what it is: good at keyword-ish questions,
@@ -17,6 +22,7 @@ slow enough that the caller has to stream.
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Iterable, Sequence
 
 from .models import Note
@@ -25,6 +31,8 @@ MAX_TAGS = 6
 MAX_LINKS = 5
 MAX_CONTEXT_NOTES = 8
 CONTEXT_CHARS_PER_NOTE = 1200
+#: A recap longer than this stops being a recap and becomes an essay in a note.
+MAX_RECAP_CHARS = 600
 
 _STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
@@ -124,6 +132,10 @@ def parse_link_suggestions(text: str, known_titles: Iterable[str], *, exclude: s
     return out[:MAX_LINKS]
 
 
+#: List furniture a model may wrap a line in: bullets, checkboxes, numbering.
+_LIST_PREFIX_RE = re.compile(r"^\s*(?:[-*+\u2022]|\[[ xX]\]|\(?\d+[.)])\s*")
+
+
 # --- prompts --------------------------------------------------------------
 
 def _note_block(note: Note, *, limit: int | None = None) -> str:
@@ -194,6 +206,60 @@ def build_links_messages(note: Note, candidate_titles: Sequence[str]) -> list[di
             "content": f"{_note_block(note)}\n\nCandidate titles:\n{listing}",
         },
     ]
+
+
+def build_daily_summary_messages(day: date, done: Sequence[Note]) -> list[dict]:
+    """Ask for a recap of a day's finished work.
+
+    The list is supplied as fact, so the instruction that matters most is the
+    one forbidding invention: a journal entry that credits work nobody did is
+    worse than a thin entry, because it is the thing you would later trust.
+    """
+    listing = "\n".join(f"- {n.title}" for n in done)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You write a short first-person recap of a day's work for the "
+                "person's own journal. Two or three sentences, plain prose. No "
+                "heading, no bullets, no lists, no quotation marks. Say what "
+                "actually got done and what it added up to. Use only the work "
+                "listed: do not invent anything, do not estimate effort, do not "
+                "add encouragement, and do not refer to the list itself."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Date: {day.isoformat()}\n\nCompleted:\n{listing}",
+        },
+    ]
+
+
+def parse_daily_summary(text: str) -> str:
+    """Collapse a model reply into one recap paragraph.
+
+    This text lands in a Markdown file, so a stray heading or code fence would
+    be committed to the note as broken markup. The section already lists the
+    tasks, so bullets in the recap are joined into prose instead of repeating
+    the list in a second shape.
+    """
+    parts: list[str] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("```"):
+            continue
+        line = _LIST_PREFIX_RE.sub("", line).strip()
+        if line:
+            parts.append(line)
+    para = re.sub(r"\s+", " ", " ".join(parts)).strip()
+    para = para.strip('"').strip("\u201c\u201d").strip()
+    if len(para) > MAX_RECAP_CHARS:
+        cut = para[:MAX_RECAP_CHARS]
+        # Trim to a sentence boundary when there is one, so the note does not
+        # end mid-word.
+        stop = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+        para = (cut[: stop + 1] if stop > MAX_RECAP_CHARS // 2 else cut.rstrip()).strip()
+    return para
 
 
 def build_ask_messages(question: str, context: Sequence[Note]) -> list[dict]:

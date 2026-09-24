@@ -122,6 +122,8 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
   move, blocked cards, cycle-safe blockers (see [Task management](#task-management))
 - **Mood & pain** — a year-at-a-glance heatmap with one-tap logging, streaks and
   a distribution (see [Mood & pain](#mood--pain))
+- **Daily notes** — an end-of-day recap of what you actually finished, written
+  into that day's own note (see [Daily notes](#daily-notes))
 - **Collections** — NeatNook-style curation, create + filter
 - **Timeline** — Agenda-style date-filter view
 - **Calendar** — month grid with per-day counts, click-through
@@ -234,6 +236,58 @@ Decisions worth knowing before you edit any of it:
   next save would be data loss, so filtering to the five known levels happens
   when the series is *plotted*, never when a note is parsed.
 
+## Daily notes
+
+Finish a task and it is stamped with the day you finished it. After your cutoff
+hour (22:00 by default) a scheduler writes that day's finished work into a note
+titled with the date — a short recap from the local model, then the list it was
+drawn from.
+
+```yaml
+completed: 2026-09-23   # stamped on the transition into complete
+```
+
+This is the only feature that runs on its own, so most of the decisions are about
+what it does when nobody is watching:
+
+- **A task records *that* it is done, not *when*.** Without a stamp there is no
+  way to ask "what did I finish on Tuesday", so `completed` is written when a
+  note becomes complete. Nothing is backfilled: a status flag cannot be turned
+  back into a day, and dating old tasks from the file's mtime would file work
+  under afternoons it never happened on.
+- **Tasks finished before this existed simply have no date**, so they appear in
+  no daily note. That is the honest outcome rather than a guessed one.
+- **The date survives editing but not reopening.** Re-saving a finished task,
+  renaming it or dragging its card around must not move the work to today, so an
+  existing date is kept while the note stays complete. Reopening clears it, which
+  is what lets a task finished *again* report the second time.
+- **Only `Status.COMPLETE` stamps it.** A struck-through note sits in the Done
+  column but was abandoned, not finished; a recap that counts abandoned work is
+  worse than no recap.
+- **No note is created for a day with nothing in it.** A page saying "nothing
+  happened" is worse than the absence of a page.
+- **The recap is a fenced section, not the whole note.** The day's note is also
+  somewhere you write, so the generated part is delimited by HTML comments and
+  swapped wholesale. Regenerating leaves your own lines, before and after it,
+  byte for byte.
+- **The list is always written; the recap is not.** If the model is down, or has
+  been shut off, the note still records what you did and says so in the API
+  result. The prose is the part that is allowed to go missing.
+- **The run is a loop, not a cron entry.** Nothing else is running to wake a
+  local app at 22:00, and a laptop is shut at 22:00 far more often than it is
+  open — so the loop ticks, and a day missed while the machine was off is caught
+  up on the next start. One day of catch-up only: waking to fifteen model calls
+  about afternoons nobody will read is not a feature.
+- **Once per day, recorded in the index.** `daily_summary_state` is what stops
+  every tick from spending a model call and rewriting the note all evening.
+  Anything finished *after* the cutoff needs `refresh` — the run has already
+  happened, and the note should not silently disagree with your evening.
+- **Scheduler failures are recorded, not swallowed.** `GET /api/daily` reports
+  the last error, because a scheduler that fails every night in silence is
+  unfalsifiable.
+
+Configuration: `NOOKBOARD_DAILY_SUMMARY_HOUR` (default `22`, `-1` disables).
+
 ## API
 
 - `GET    /api/health`
@@ -247,6 +301,10 @@ Decisions worth knowing before you edit any of it:
 - `GET    /api/search?q=`
 - `GET    /api/mood?days=&start=&end=` → a collapsed record per logged day, plus
   `summary` (days logged, streak, averages, counts) and the level vocabulary
+- `GET    /api/daily` → days owed a summary now, days already summarised, and the
+  scheduler's last error
+- `GET    /api/daily/{day}` → what that day's note holds and what it is owed
+- `POST   /api/daily/summary` `{date?, refresh?}` → write the day's recap
 - `GET    /api/calendar/{year}/{month}` → `{"YYYY-MM-DD": count, ...}`
 - `POST   /api/recurring/run` → instantiate due recurring notes now
 - `GET    /api/export.zip` → download the vault as a zip
@@ -303,6 +361,7 @@ blocked_by: [outline] # ids of the notes it waits on
 position: 2.0         # order within its column
 mood: low             # great | good | meh | low | bad
 pain: 7               # 0-10, optional
+completed: 2026-09-23 # stamped server-side when the task is finished
 ```
 
 ## Obsidian
@@ -379,14 +438,16 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 238 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 282 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
-                 #              mood (series/streaks/collapse/coercion)
-make test-js     # 89 node:test — rapid-log parsing, calendar maths, wikilinks,
-                 #              display helpers, board helpers, mood grid helpers
+                 #              mood (series/streaks/collapse/coercion),
+                 #              daily (stamping/sections/scheduling/recap)
+make test-js     # 97 node:test — rapid-log parsing, calendar maths, wikilinks,
+                 #              display helpers, board helpers, mood grid helpers,
+                 #              and that every local import exists
 make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
-./tools/check_render.sh   # 71 DOM assertions in headless Chromium
+./tools/check_render.sh   # 72 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether

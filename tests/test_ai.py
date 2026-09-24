@@ -6,9 +6,12 @@ tested in test_ai_api.py against a fake SSE server.
 from datetime import date
 
 from app.ai import (
+    MAX_RECAP_CHARS,
+    parse_daily_summary,
     parse_link_suggestions,
     parse_tag_suggestions,
     select_relevant,
+    build_daily_summary_messages,
     build_summary_messages,
     build_tags_messages,
     build_links_messages,
@@ -159,3 +162,55 @@ def test_ask_messages_include_retrieved_context():
 def test_ask_messages_handle_no_context():
     msgs = build_ask_messages("anything?", [])
     assert len(msgs) >= 2
+
+
+# --- daily recap ----------------------------------------------------------
+#
+# The recap is written into a note, so it has to arrive as prose: a heading or a
+# fence would be committed to the file as broken markup.
+
+def test_daily_messages_supply_the_work_as_fact():
+    msgs = build_daily_summary_messages(date(2026, 9, 23), [_note("a", "Ship the zine")])
+    system = msgs[0]["content"]
+    blob = " ".join(m["content"] for m in msgs)
+    assert "Ship the zine" in blob
+    assert "2026-09-23" in blob
+    # The instruction that matters most: a journal entry crediting work nobody
+    # did is the thing you would later trust and be wrong about.
+    assert "do not invent" in system
+    assert "No heading, no bullets" in system
+
+
+def test_recap_collapses_to_one_paragraph():
+    assert parse_daily_summary("A slow day.\nI shipped the zine.") == (
+        "A slow day. I shipped the zine."
+    )
+
+
+def test_recap_drops_headings_and_code_fences():
+    assert parse_daily_summary("## Recap\n```\nA slow day.\n```") == "A slow day."
+
+
+def test_recap_joins_bullets_into_prose():
+    """The section already lists the tasks; a second list adds nothing."""
+    assert parse_daily_summary("- Shipped the zine\n- Fixed the printer") == (
+        "Shipped the zine Fixed the printer"
+    )
+
+
+def test_recap_strips_wrapping_quotes():
+    assert parse_daily_summary('"A slow day."') == "A slow day."
+
+
+def test_recap_is_capped_and_cut_at_a_sentence():
+    text = ". ".join(f"Sentence number {i} with a few more words" for i in range(40))
+    out = parse_daily_summary(text)
+    assert len(out) <= MAX_RECAP_CHARS
+    # Not truncated mid-word where a sentence boundary was available.
+    assert out.endswith(".")
+
+
+def test_recap_of_nothing_is_empty():
+    assert parse_daily_summary("") == ""
+    assert parse_daily_summary("```") == ""
+    assert parse_daily_summary(None) == ""

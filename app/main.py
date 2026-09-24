@@ -1,11 +1,13 @@
 """FastAPI application factory."""
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import zipfile
+from contextlib import asynccontextmanager
 from pathlib import Path
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from dataclasses import replace
@@ -22,7 +24,7 @@ from .deps import (
 )
 from .models import (
     MOOD_LEVELS, PAIN_MAX, PAIN_MIN, STAGE_LABELS, Note, Signifier, Stage, Status,
-    coerce_pain, reconcile, stage_for_status,
+    coerce_pain, reconcile, stage_for_status, stamp_completed,
 )
 from . import mood as moodlib
 from .vault import Vault
@@ -30,6 +32,7 @@ from .db import Database
 from .ics import notes_to_ics
 from .config import Settings, load_settings
 from . import ai
+from . import daily
 from .llm import LLMError, LlamaCpp
 
 
@@ -77,7 +80,117 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
     for n in db.run_recurring(date.today()):
         vault.write(n)
 
-    app = FastAPI(title="nookboard")
+    # -- end-of-day summaries ----------------------------------------------
+    #
+    # A loop rather than a cron entry, because this is a local app: nothing else
+    # is running to wake it at 22:00, and the machine is shut at 22:00 far more
+    # often than it is open. So the loop ticks, `daily.pending_days` decides what
+    # is genuinely owed, and a day missed while the laptop was off is caught up
+    # on the next start. `db.daily_summary_state` records what has run, which is
+    # what keeps a due day from being summarised again on every tick.
+    #
+    # `llm` and `_index` are defined further down; these are only called once the
+    # app is serving, by which point the whole factory has run.
+
+    TICK_SECONDS = 300
+
+    def _owed_days(now: datetime) -> list[date]:
+        notes, _ = _index()
+        blocked: set[date] = set()
+        for raw in db.daily_generated_days():
+            try:
+                blocked.add(date.fromisoformat(raw))
+            except ValueError:
+                continue
+        return daily.pending_days(
+            notes,
+            today=now.date(),
+            hour=cfg.daily_summary_hour,
+            now=now,
+            blocked=blocked,
+        )
+
+    async def _generate_daily(day: date) -> dict:
+        """Write a day's summary into that day's own note.
+
+        Deliberately never raises: this normally runs unattended, and a model
+        that is down should leave the day unmarked so the next tick tries again,
+        not tear down the schedule.
+        """
+        notes, _ = _index()
+        done = daily.completed_on(notes, day)
+        if not done:
+            # No note is created for an empty day. A page saying "nothing
+            # happened" is worse than the absence of a page.
+            return {
+                "date": day.isoformat(),
+                "completed": 0,
+                "wrote": False,
+                "reason": "nothing was completed that day",
+            }
+
+        recap = None
+        error = None
+        try:
+            reply = await llm.complete(ai.build_daily_summary_messages(day, done))
+            recap = ai.parse_daily_summary(reply) or None
+        except LLMError as exc:
+            # The list of what got done is already known and is the part that
+            # matters; only the prose is allowed to go missing.
+            error = str(exc)
+
+        section = daily.render(day, done, recap)
+        note_id = daily.daily_note_id(day)
+        current = next((n for n in notes if n.id == note_id), None)
+        if current is not None:
+            # Regenerate in place, leaving anything written by hand around it.
+            vault.write(replace(current, body=daily.upsert_section(current.body, section)))
+        else:
+            vault.write(daily.note_for(day, done, recap))
+        db.mark_daily_generated(day.isoformat())
+
+        result = {
+            "date": day.isoformat(),
+            "completed": len(done),
+            "wrote": True,
+            "note_id": note_id,
+            "titles": [n.title for n in done],
+            "recap": recap,
+        }
+        if error:
+            result["recap_error"] = error
+        return result
+
+    async def _daily_loop() -> None:
+        while True:
+            try:
+                for day in _owed_days(datetime.now()):
+                    await _generate_daily(day)
+                app.state.daily_last_error = None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                # Recorded rather than swallowed, and read back by /api/daily:
+                # a scheduler failing every night in silence is unfalsifiable.
+                app.state.daily_last_error = f"{type(exc).__name__}: {exc}"
+            await asyncio.sleep(TICK_SECONDS)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        task = None
+        if cfg.daily_summary_hour >= 0:
+            task = asyncio.create_task(_daily_loop())
+        try:
+            yield
+        finally:
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    app = FastAPI(title="nookboard", lifespan=lifespan)
     app.state.settings = cfg
     app.state.vault = vault
     app.state.db = db
@@ -194,6 +307,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             blocked_by=[d for d in payload.blocked_by if d != payload.id],
             position=position,
             created=date.today(),
+            completed=stamp_completed(None, complete=status is Status.COMPLETE),
         )
         vault.write(note)
         return note.to_dict()
@@ -242,6 +356,9 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             recurrence=payload.get("recurrence", existing.recurrence),
             stage=stage,
             blocked_by=blocked_by,
+            completed=stamp_completed(
+                existing.completed, complete=status is Status.COMPLETE
+            ),
             position=payload.get("position", existing.position),
         )
         vault.write(updated)
@@ -343,7 +460,14 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         # A drop names its intent as a column, so the column wins over the
         # task's previous status (see reconcile_move).
         new_stage, new_status = reconcile_move(stage.value, existing.status)
-        moved = replace(existing, stage=new_stage, status=new_status)
+        moved = replace(
+            existing,
+            stage=new_stage,
+            status=new_status,
+            completed=stamp_completed(
+                existing.completed, complete=new_status is Status.COMPLETE
+            ),
+        )
 
         target = sort_column([
             n for n in notes
@@ -522,6 +646,65 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             ai.build_ask_messages(question, context),
             finish=lambda text: {"notes": [n.to_dict() for n in context]},
         )
+
+    # -- daily notes -------------------------------------------------------
+
+    def _coerce_date(value, field: str) -> date:
+        try:
+            return date.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{field} must be an ISO date, got {value!r}")
+
+    @app.get("/api/daily/{day}")
+    def daily_state(day: str):
+        """What a day's note currently holds, and what it is owed."""
+        target = _coerce_date(day, "day")
+        notes, _ = _index()
+        done = daily.completed_on(notes, target)
+        note_id = daily.daily_note_id(target)
+        note = next((n for n in notes if n.id == note_id), None)
+        return {
+            "date": target.isoformat(),
+            "completed": [n.to_dict() for n in done],
+            "count": len(done),
+            "note_id": note_id,
+            "has_note": note is not None,
+            "has_summary": bool(note and daily.has_summary(note.body)),
+            "generated": target.isoformat() in db.daily_generated_days(),
+            "scheduled_hour": cfg.daily_summary_hour,
+            "last_error": getattr(app.state, "daily_last_error", None),
+        }
+
+    @app.post("/api/daily/summary")
+    async def daily_summary(payload: dict):
+        """Summarise a day's finished work into that day's own note.
+
+        The scheduled run happens once, so anything finished after the cutoff
+        would otherwise leave the note describing an earlier evening; `refresh`
+        re-runs a day that has already been written.
+        """
+        target = (
+            _coerce_date(payload["date"], "date")
+            if payload.get("date")
+            else date.today()
+        )
+        if payload.get("refresh"):
+            db.clear_daily_generated(target.isoformat())
+        return await _generate_daily(target)
+
+    @app.get("/api/daily")
+    def daily_pending():
+        """Days owed a summary right now, and when the next run is due."""
+        now = datetime.now()
+        recorded = sorted(db.daily_generated_days())
+        return {
+            "today": now.date().isoformat(),
+            "scheduled_hour": cfg.daily_summary_hour,
+            "due_now": now.hour >= cfg.daily_summary_hour >= 0,
+            "owed": [d.isoformat() for d in _owed_days(now)],
+            "summarised": recorded,
+            "last_error": getattr(app.state, "daily_last_error", None),
+        }
 
     # Static front-end
     static_dir = Path(__file__).resolve().parent.parent / "static"
