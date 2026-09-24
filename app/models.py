@@ -242,6 +242,17 @@ def reconcile(stage: Optional[str], status: Status) -> tuple[Optional[str], Stat
     return stage, status
 
 
+#: A YAML value as something JSON can carry, without throwing anything away.
+def _json_safe(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return str(value)
+
+
 def _coerce(enum_cls, value, default):
     """Enum lookup that falls back instead of raising.
 
@@ -297,6 +308,15 @@ def coerce_pain(value: object) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return max(PAIN_MIN, min(PAIN_MAX, number))
+
+
+#: The frontmatter keys this model reads and writes. Anything else in a file belongs
+#: to whoever put it there and is carried through untouched.
+CLAIMED_KEYS = frozenset({
+    "id", "collection", "title", "signifier", "status", "dates", "at", "until",
+    "path", "url", "icon", "parent_id", "created", "mood", "pain", "tags",
+    "recurrence", "stage", "blocked_by", "position", "completed", "aliases",
+})
 
 
 @dataclass(frozen=True)
@@ -366,10 +386,25 @@ class Note:
     # Vault on read so writes return to the same file. Never persisted to
     # frontmatter, and excluded from equality so round-trip tests are unaffected.
     source_rel: Optional[str] = field(default=None, compare=False, repr=False)
+    #: Frontmatter this model does not own, exactly as it was written.
+    #:
+    #: A vault is hand-edited text, and a file may carry keys with no meaning here --
+    #: a plugin's settings, a field from another app, a note to the future. They used
+    #: to be dropped on the next save, which is the one thing a note-taking app must
+    #: never do to a note. Kept verbatim and written back; excluded from equality so
+    #: round-trip tests keep comparing the fields this model actually understands.
+    #:
+    #: It is a snapshot from the last read, not a live view: a key removed in an editor
+    #: outside this app comes back on the next save unless the note is read again,
+    #: which the app does whenever the vault changes on disk.
+    frontmatter_extra: dict = field(default_factory=dict, compare=False, repr=False)
 
     def to_markdown(self) -> str:
         post = frontmatter.Post(self.body)
-        post.metadata = {
+        # Keys this model does not own come first and are written back as they were
+        # read; the app's own facts follow and win any collision, because those are
+        # the fields it maintains. Nothing here deletes a key for being unfamiliar.
+        post.metadata = {**self.frontmatter_extra, **{
             "id": self.id,
             "collection": self.collection,
             "title": self.title,
@@ -394,7 +429,7 @@ class Note:
             "blocked_by": list(self.blocked_by),
             "position": self.position,
             "completed": self.completed.isoformat() if self.completed else None,
-        }
+        }}
         # Obsidian resolves [[Title]] by filename or alias, never by our
         # `title:` field, so record the title as an alias to make the same
         # wikilink work in both apps.
@@ -490,6 +525,7 @@ class Note:
             completed = None
 
         return cls(
+            frontmatter_extra={k: v for k, v in meta.items() if k not in CLAIMED_KEYS},
             id=stem,
             collection=str(meta.get("collection") or "inbox"),
             title=str(meta.get("title") or stem),
@@ -516,6 +552,11 @@ class Note:
 
     def to_dict(self) -> dict:
         d = asdict(self)
+        # Frontmatter this model does not own, made safe to send. YAML hands back
+        # dates and nested maps, and a client cannot render a `datetime`; an unfamiliar
+        # value becomes its own text rather than being dropped, because the reading view
+        # exists to show what the file says.
+        d["frontmatter_extra"] = {k: _json_safe(v) for k, v in self.frontmatter_extra.items()}
         d["signifier"] = self.signifier.value
         d["status"] = self.status.value
         # Always report a concrete column: a note nobody has placed on the

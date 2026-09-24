@@ -24,7 +24,7 @@ make test-js
 |---|---|
 | `/` | focus search |
 | `n` | new note |
-| `Esc` | close the open note (or blur search) |
+| `Esc` | close the reading dialog, the open note, or blur search — in that order |
 | `Enter` / `,` | commit a tag in the tag field |
 | `Backspace` | in an empty tag field, remove the last tag |
 
@@ -40,7 +40,26 @@ Deep links (shareable, and they survive reload):
 #/note/<id>                 a specific note
 #/view/timeline/note/<id>   a note with the timeline tab selected
 #/view/board/note/<id>      the board with a card open in the editor
+#/preview/<id>              a note open in the reading dialog
 ```
+
+## Reading a note
+
+**Preview** in the editor's tab row opens the note in a dialog rather than swapping
+half the editor for it: reading a finished note is a different act from editing one,
+and it wants the whole window. The dialog holds the properties the note carries, the
+note rendered, and what links to it — one scroller, so there is one place to lose your
+place. `Esc` closes it, `Tab` stays inside it, clicking the backdrop closes it, and
+focus goes back to the button that opened it. It is a deep link as well
+(`#/preview/<id>`), so a reload lands back in the reading rather than the editor
+behind it.
+
+Properties are drawn only when the note actually carries them — an empty `folder:`
+line is not information — under the app's own names. Then comes whatever else the
+file's frontmatter says, under the file's own key names, because **this app carries
+frontmatter it does not understand rather than dropping it**: a key nobody here knows
+is read, kept verbatim, and written back on the next save. A vault is hand-edited
+text, and losing a note's own words is the one thing a note app must never do.
 
 ## Design
 
@@ -1171,7 +1190,7 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 805 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 811 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),
@@ -1193,8 +1212,11 @@ make test        # 805 pytest — model, vault, obsidian, foreign-vault, db, api
                  #              (what a commit message says, reading a log back,
                  #              the parent a deleted note is restored from, what
                  #              a path may be, and a real repository for the rest:
-                 #              moves, restores, checkpoints, unrecorded work)
-make test-js     # 186 node:test — rapid-log parsing, calendar maths, wikilinks,
+                 #              moves, restores, checkpoints, unrecorded work),
+                 #              frontmatter extras (keys this app does not own:
+                 #              carried through a round trip, nested values kept,
+                 #              the app's own fields winning, JSON-safe output)
+make test-js     # 192 node:test — rapid-log parsing, calendar maths, wikilinks,
                  #              ISO week labels, display helpers, board helpers,
                  #              mood grid helpers, query fences (finding them,
                  #              splicing answers, leaving other languages alone),
