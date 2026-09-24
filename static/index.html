@@ -24,6 +24,7 @@
     <nav class="tabs" role="tablist" aria-label="views">
       <button data-view="rapid"       class="tab active" role="tab">Rapid Log</button>
       <button data-view="board"       class="tab"        role="tab">Board</button>
+      <button data-view="mood"        class="tab"        role="tab">Mood</button>
       <button data-view="collections" class="tab"        role="tab">Collections</button>
       <button data-view="timeline"    class="tab"        role="tab">Timeline</button>
       <button data-view="calendar"    class="tab"        role="tab">Calendar</button>
@@ -126,6 +127,65 @@
       </p>
 
       <div id="board-columns" class="board-columns"></div>
+    </section>
+
+    <section id="mood-view" class="mood-view hidden">
+      <div class="mood-bar">
+        <div class="mood-bar-left">
+          <h2 class="mood-title">Mood &amp; pain</h2>
+          <p class="mood-hint">
+            Logged to a note dated today and tagged <b>#mood</b>, so it stays
+            yours and stays Markdown. A day shows its lowest mood and its
+            highest pain.
+          </p>
+        </div>
+        <div class="mood-bar-right">
+          <div class="mood-ranges" role="group" aria-label="date range">
+            <button class="chip-toggle" data-mood-range="42"  type="button" aria-pressed="false">6 weeks</button>
+            <button class="chip-toggle" data-mood-range="182" type="button" aria-pressed="false">6 months</button>
+            <button class="chip-toggle" data-mood-range="365" type="button" aria-pressed="true">1 year</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="mood-log" class="mood-log">
+        <span class="mood-log-label">How's today?</span>
+        <div id="mood-log-picks" class="mood-log-picks" role="group" aria-label="log today's mood"></div>
+        <label class="mood-log-pain">
+          <span>pain</span>
+          <input id="mood-log-pain" type="range" min="0" max="10" step="1" value="0"
+                 aria-label="today's pain, 0 to 10">
+          <output id="mood-log-pain-out" class="mood-log-pain-out">–</output>
+        </label>
+        <button id="mood-log-clear" class="mood-log-clear" type="button">clear</button>
+      </div>
+
+      <div id="mood-stats" class="mood-stats" aria-live="polite"></div>
+
+      <div class="mood-scroll">
+        <div id="mood-heatmap" class="mood-heatmap"></div>
+      </div>
+
+      <div class="mood-legend">
+        <span class="mood-legend-label">better</span>
+        <span id="mood-legend-ramp" class="mood-legend-ramp"></span>
+        <span class="mood-legend-label">worse</span>
+        <span class="mood-legend-gap"></span>
+        <span class="mood-legend-pain" aria-hidden="true"></span>
+        <span class="mood-legend-label">pain &ge; 5 that day</span>
+        <span id="mood-scroll-hint" class="mood-scroll-hint hidden">scroll for earlier weeks &rarr;</span>
+      </div>
+
+      <div class="mood-lower">
+        <section class="mood-panel">
+          <h3 class="mood-panel-title">Recent days</h3>
+          <ul id="mood-recent" class="mood-recent"></ul>
+        </section>
+        <section class="mood-panel">
+          <h3 class="mood-panel-title">Distribution</h3>
+          <ul id="mood-distribution" class="mood-distribution"></ul>
+        </section>
+      </div>
     </section>
 
     <section class="editor">
@@ -235,6 +295,14 @@
           </div>
           <span id="mood-value" class="mood-value">no mood set</span>
           <button type="button" class="mood-clear" data-mood="" title="clear mood">clear</button>
+        </div>
+
+        <div class="pain-row">
+          <span class="field-label">pain</span>
+          <input id="note-pain" type="range" min="0" max="10" step="1" value="0"
+                 aria-label="pain, 0 to 10">
+          <output id="note-pain-out" class="pain-out">not logged</output>
+          <button type="button" class="pain-clear" id="note-pain-clear" title="clear pain">clear</button>
         </div>
 
         <div class="editor-tabs" role="tablist" aria-label="editor mode">

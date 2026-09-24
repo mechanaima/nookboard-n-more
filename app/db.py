@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS notes (
     parent_id   TEXT,
     created     TEXT NOT NULL,
     mood        TEXT,
+    pain        INTEGER,
     tags_csv    TEXT NOT NULL DEFAULT '',
     recurrence  TEXT,
     stage       TEXT,
@@ -59,6 +60,7 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("stage", "TEXT"),
     ("blocked_by_csv", "TEXT NOT NULL DEFAULT ''"),
     ("position", "REAL"),
+    ("pain", "INTEGER"),
 )
 
 
@@ -82,16 +84,25 @@ class Database:
             if column not in have:
                 self.conn.execute(f"ALTER TABLE notes ADD COLUMN {column} {decl}")
 
-    def upsert(self, n: Note, mood: str | None = None) -> None:
+    def upsert(self, n: Note) -> None:
+        """Index a note. The Note is the whole truth — never a partial update.
+
+        This used to take an optional `mood` and keep the indexed value when it
+        was absent (`COALESCE(excluded.mood, notes.mood)`). Since the vault file
+        is written from the same Note, the only thing that could do was leave
+        the index holding a mood the file no longer had: clearing a mood cleared
+        the file and silently kept the row, so search and the index kept
+        reporting a mood the note had dropped.
+        """
         search_text = f"{n.title}\n{n.body}".lower()
         tags_csv = ",".join(n.tags)
         self.conn.execute(
             """
             INSERT INTO notes (id, collection, title, body, signifier, status,
-                               dates_csv, parent_id, created, mood, tags_csv,
+                               dates_csv, parent_id, created, mood, pain, tags_csv,
                                recurrence, stage, blocked_by_csv, position,
                                search_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 collection=excluded.collection,
                 title=excluded.title,
@@ -101,7 +112,8 @@ class Database:
                 dates_csv=excluded.dates_csv,
                 parent_id=excluded.parent_id,
                 created=excluded.created,
-                mood=COALESCE(excluded.mood, notes.mood),
+                mood=excluded.mood,
+                pain=excluded.pain,
                 tags_csv=excluded.tags_csv,
                 recurrence=excluded.recurrence,
                 stage=excluded.stage,
@@ -114,7 +126,7 @@ class Database:
                 n.signifier.value, n.status.value,
                 ",".join(d.isoformat() for d in n.dates),
                 n.parent_id, n.created.isoformat(),
-                mood, tags_csv, n.recurrence,
+                n.mood, n.pain, tags_csv, n.recurrence,
                 n.stage, ",".join(n.blocked_by), n.position,
                 search_text,
             ),
@@ -131,13 +143,6 @@ class Database:
         self.conn.execute(
             "INSERT OR IGNORE INTO recurrence_state (note_id, last_run) VALUES (?, ?)",
             (n.id, n.created.isoformat()),
-        )
-        self.conn.commit()
-
-    def set_mood(self, note_id: str, mood: str | None) -> None:
-        self.conn.execute(
-            "UPDATE notes SET mood = ? WHERE id = ?",
-            (mood, note_id),
         )
         self.conn.commit()
 
@@ -264,6 +269,7 @@ class Database:
             parent_id=row["parent_id"],
             created=date.fromisoformat(row["created"]),
             mood=row["mood"],
+            pain=row["pain"],
             tags=tags,
             recurrence=row["recurrence"],
             stage=row["stage"],

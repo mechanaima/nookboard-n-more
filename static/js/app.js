@@ -10,6 +10,9 @@ import {
   signifierGlyph, moodEmoji, statusLabel, escapeHtml,
   highlight, heatLevel, friendlyDate, localIsoDate,
 } from "./entry.js";
+import {
+  buildGrid, dayLabel, distribution, findCheckin, painText, recentDays, statChips,
+} from "./mood.js";
 
 // Parse a JSON response, turning FastAPI's `detail` into a real Error so a
 // refused move (a dependency cycle) can be shown instead of swallowed.
@@ -80,6 +83,10 @@ const api = {
     const q = new URLSearchParams(params).toString();
     return jsonOrThrow(await fetch(`/api/tasks${q ? "?" + q : ""}`));
   },
+
+  // -- mood + pain
+  async mood(days = 365)     { return jsonOrThrow(await fetch(`/api/mood?days=${days}`)); },
+  async notesOn(isoDate)     { return jsonOrThrow(await fetch(`/api/notes?date=${encodeURIComponent(isoDate)}`)); },
 };
 
 const state = {
@@ -88,6 +95,7 @@ const state = {
   activeView: "rapid",
   activeId: null,
   activeMood: null,
+  activePain: null,
   rapidFilterCollection: null, // null = show all
   editorMode: "split",
   calYear: new Date().getFullYear(),
@@ -105,6 +113,10 @@ const state = {
   tasks: [],               // open tasks, for the dependency picker
   deps: null,              // dependency payload for the open note
   boardError: null,
+  // -- mood
+  mood: null,              // last /api/mood payload
+  moodDays: 365,           // range in days
+  moodPain: null,          // pain staged in the today-log row (null = not set)
 };
 
 const $ = (s) => document.querySelector(s);
@@ -121,17 +133,25 @@ const todayIso = () => localIsoDate(new Date());
 
 const SIDEBAR_VIEWS = ["rapid", "collections", "timeline", "calendar"];
 
+//: Views that need the full width and therefore trade away the sidebar: the
+//: board (five columns) and mood (a year of weeks). They keep the editor as a
+//: second column so a note can be read or fixed without leaving the view.
+const WIDE_VIEWS = ["board", "mood"];
+
 function showView(name) {
   state.activeView = name;
   for (const v of SIDEBAR_VIEWS) {
     $("#" + v + "-pane").classList.toggle("hidden", v !== name);
   }
-  $("#board-view").classList.toggle("hidden", name !== "board");
+  for (const v of WIDE_VIEWS) {
+    $("#" + v + "-view").classList.toggle("hidden", v !== name);
+  }
   $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === name));
   moveInk();
   if (name === "calendar") renderCalendar();
   render();
   if (name === "board") renderBoard();
+  if (name === "mood") renderMood();
 }
 
 async function refresh() {
@@ -143,15 +163,17 @@ async function refresh() {
   // The board is derived server-side (positions, blocked-ness), so it is
   // re-fetched rather than recomputed from a possibly-stale client copy.
   if (state.activeView === "board") await renderBoard();
+  if (state.activeView === "mood") await renderMood();
 }
 
-// Board mode trades the sidebar for the board and keeps the editor alongside,
-// so dependencies can be wired while looking at the cards.
+// A wide view trades the sidebar for itself and keeps the editor alongside, so
+// a note can be opened without leaving the view. Both classes are derived from
+// `activeView`, so no view can hide the editor by forgetting to say so.
 function syncLayoutMode() {
   const layout = document.querySelector(".layout");
-  const isBoard = state.activeView === "board";
-  layout.classList.toggle("is-board", isBoard);
-  layout.classList.toggle("is-board-empty", isBoard && !state.activeId);
+  const isWide = WIDE_VIEWS.includes(state.activeView);
+  layout.classList.toggle("is-wide", isWide);
+  layout.classList.toggle("is-wide-empty", isWide && !state.activeId);
 }
 
 function render() {
@@ -368,6 +390,10 @@ function renderEditor() {
   // mood picker
   state.activeMood = n.mood || null;
   syncMoodButtons();
+  // Pain is a slider, so an unset value has no handle position to show — the
+  // label carries that ("not logged") while the handle rests at 0.
+  state.activePain = n.pain === undefined ? null : n.pain;
+  renderPainRow();
   renderTagsPreview();
 
   setEditorMode(state.editorMode);
@@ -489,6 +515,9 @@ async function saveEditor() {
       dates,
       tags,
       mood: state.activeMood || null,
+      // Explicit null when unset, so clearing a reading actually clears it
+      // rather than leaving the old value in place.
+      pain: state.activePain === undefined ? null : state.activePain,
       recurrence: $("#note-recurrence").value || null,
     });
   } catch (err) {
@@ -580,6 +609,23 @@ function syncMoodButtons() {
   });
   const label = $("#mood-value");
   if (label) label.textContent = state.activeMood ? state.activeMood : "no mood set";
+}
+
+function renderPainRow() {
+  const slider = $("#note-pain");
+  const out = $("#note-pain-out");
+  if (!slider || !out) return;
+  const unset = state.activePain === null || state.activePain === undefined;
+  slider.value = unset ? 0 : state.activePain;
+  out.textContent = unset ? "not logged" : `${state.activePain}/10`;
+  out.classList.toggle("is-unset", unset);
+}
+
+function pickPain(raw) {
+  // "" is the clear button; Number("") is 0, which is a real reading, so the
+  // empty string has to be handled before any numeric coercion.
+  state.activePain = raw === "" ? null : Number(raw);
+  renderPainRow();
 }
 
 function renderTagsPreview() {
@@ -1179,6 +1225,289 @@ function positionInk(nav, ink, activeBtn) {
   ink.classList.add("ready");
 }
 
+/* ----------------------------------------------------------------- mood -- */
+
+//: A day at or above this is ringed in the grid. 5/10 is where pain stops
+//: being background noise, and the legend says so in words.
+const PAIN_FLAG = 5;
+
+function moodToday() {
+  const iso = todayIso();
+  return (state.mood?.days || []).find((d) => d.date === iso) || null;
+}
+
+// The note a reading is written to. Only a note already tagged #mood counts:
+// attaching a mood to whatever note happens to be dated today would rewrite a
+// journal entry the user wrote themselves. The id is derived from the date, so
+// there can only ever be one check-in per day.
+async function moodCheckinNote() {
+  const today = todayIso();
+  const candidates = await api.notesOn(today);
+  const existing = findCheckin(candidates);
+  if (existing) return existing;
+  return await api.createNote({
+    id: `mood-${today}`,
+    collection: "inbox",
+    title: "Mood check-in",
+    body: "",
+    signifier: "note",
+    dates: [today],
+    tags: ["mood"],
+  });
+}
+
+// `mood === undefined` leaves the mood alone; `null` clears it. Same for pain.
+async function logMood(mood, pain) {
+  const note = await moodCheckinNote();
+  const patch = {};
+  if (mood !== undefined) patch.mood = mood;
+  if (pain !== undefined) patch.pain = pain;
+  if (!Object.keys(patch).length) return;
+  try {
+    await api.updateNote(note.id, patch);
+  } catch (err) {
+    $("#mood-stats").innerHTML =
+      `<p class="mood-stats-empty">could not save: ${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  // refresh() re-reads the vault and repaints whichever view is active; the
+  // series is server-derived, so it is re-fetched rather than patched locally.
+  await refresh();
+}
+
+function paintPainOut(el, value) {
+  const unset = value === null || value === undefined;
+  el.textContent = unset ? "\u2013" : `${value}/10`;
+  el.classList.toggle("is-unset", unset);
+}
+
+async function renderMood() {
+  let payload;
+  try {
+    payload = await api.mood(state.moodDays);
+  } catch (err) {
+    $("#mood-stats").innerHTML =
+      `<p class="mood-stats-empty">could not load mood: ${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  state.mood = payload;
+  paintMoodLog(payload);
+  paintMoodStats(payload.summary);
+  paintMoodLegend(payload);
+  paintMoodHeatmap(payload);
+  paintMoodDistribution(payload);
+  paintMoodRecent(payload.days);
+}
+
+function paintMoodLog(payload) {
+  const today = moodToday();
+  const picks = $("#mood-log-picks");
+  picks.innerHTML = "";
+  for (const level of payload.levels) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "mood-pick";
+    btn.dataset.mood = level;
+    btn.textContent = moodEmoji(level);
+    btn.title = level;
+    btn.setAttribute("aria-label", `log today's mood as ${level}`);
+    const on = today?.mood === level;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", String(on));
+    picks.appendChild(btn);
+  }
+
+  const value = today ? today.pain : null;
+  const slider = $("#mood-log-pain");
+  // An unset day leaves the handle at 0 but the label reads "–": the position
+  // is a starting point to drag from, not a claim that pain was zero.
+  slider.value = value === null || value === undefined ? 0 : value;
+  state.moodPain = value === null || value === undefined ? null : value;
+  paintPainOut($("#mood-log-pain-out"), value);
+}
+
+function paintMoodStats(summary) {
+  const host = $("#mood-stats");
+  host.innerHTML = "";
+  const chips = statChips(summary);
+  if (!chips.length) {
+    const p = document.createElement("p");
+    p.className = "mood-stats-empty";
+    p.textContent = "Nothing logged yet — the grid fills in as you record days.";
+    host.appendChild(p);
+    return;
+  }
+  for (const chip of chips) {
+    const box = document.createElement("div");
+    box.className = "mood-stat";
+    const value = document.createElement("span");
+    value.className = "mood-stat-value";
+    value.textContent = chip.value;
+    const label = document.createElement("span");
+    label.className = "mood-stat-label";
+    label.textContent = chip.label;
+    box.append(value, label);
+    host.appendChild(box);
+  }
+}
+
+// Swatches take their colour from the same tokens the cells use, so the key
+// cannot drift from what the grid paints.
+function paintMoodLegend(payload) {
+  const ramp = $("#mood-legend-ramp");
+  ramp.innerHTML = "";
+  for (const level of payload.levels) {
+    const swatch = document.createElement("i");
+    swatch.style.background = `var(--mood-${level})`;
+    swatch.title = level;
+    ramp.appendChild(swatch);
+  }
+}
+
+function paintMoodHeatmap(payload) {
+  const host = $("#mood-heatmap");
+  host.innerHTML = "";
+  const weeks = buildGrid(payload.days, payload.from, payload.to);
+
+  const daycol = document.createElement("div");
+  daycol.className = "mood-daycol";
+  for (const letter of ["M", "T", "W", "T", "F", "S", "S"]) {
+    const s = document.createElement("span");
+    s.textContent = letter;
+    daycol.appendChild(s);
+  }
+
+  const months = document.createElement("div");
+  months.className = "mood-months";
+  const grid = document.createElement("div");
+  grid.className = "mood-grid";
+
+  for (const week of weeks) {
+    const label = document.createElement("span");
+    label.className = "mood-month";
+    label.textContent = week.month || "";
+    months.appendChild(label);
+
+    for (const cell of week.cells) {
+      const el = document.createElement("div");
+      el.className = "mood-cell";
+      if (!cell.inRange) {
+        el.classList.add("mood-cell--out");
+        el.setAttribute("aria-hidden", "true");
+      } else {
+        const day = cell.day;
+        const flagged = day && day.pain !== null && day.pain !== undefined && day.pain >= PAIN_FLAG;
+        el.classList.add(day && day.mood ? `mood-cell--${day.mood}` : "mood-cell--none");
+        if (flagged) el.classList.add("mood-cell--pain");
+        const text = day ? dayLabel(day) : "not logged";
+        el.title = `${friendlyDate(cell.date, payload.today)} \u00b7 ${text}`;
+        el.setAttribute("aria-label", `${cell.date}: ${text}`);
+        el.setAttribute("role", "button");
+        el.tabIndex = 0;
+      }
+      grid.appendChild(el);
+    }
+  }
+
+  // The month axis and the grid must share column geometry, so they stack in
+  // one flex child against the weekday labels.
+  const right = document.createElement("div");
+  right.append(months, grid);
+  host.append(daycol, right);
+
+  // At narrow widths a year of weeks does not fit and the scroller cuts off the
+  // newest weeks. Say so, rather than letting them look truncated. Measured
+  // after layout, so it reflects the real overflow instead of a guess.
+  requestAnimationFrame(() => {
+    const scroller = document.querySelector(".mood-scroll");
+    const hint = $("#mood-scroll-hint");
+    if (!scroller || !hint) return;
+    hint.classList.toggle("hidden", scroller.scrollWidth <= scroller.clientWidth + 4);
+  });
+
+  // Clicking a day opens it, which is how you get from "that was a bad week"
+  // to the notes that made it one. The timeline is driven by its own date
+  // input, so set that rather than inventing a second source of truth.
+  grid.addEventListener("click", (e) => {
+    const cell = e.target.closest(".mood-cell");
+    if (!cell || !cell.getAttribute("aria-label")) return;
+    const iso = cell.getAttribute("aria-label").split(":")[0];
+    $("#timeline-date").value = iso;
+    showView("timeline");
+    renderTimeline();
+  });
+  grid.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const cell = e.target.closest(".mood-cell");
+    if (!cell) return;
+    e.preventDefault();
+    cell.click();
+  });
+}
+
+function paintMoodDistribution(payload) {
+  const host = $("#mood-distribution");
+  host.innerHTML = "";
+  const rows = distribution(
+    payload.summary.counts, payload.levels, payload.summary.days_logged,
+  );
+  for (const row of rows) {
+    const li = document.createElement("li");
+    const level = document.createElement("span");
+    level.className = "mood-dist-level";
+    level.textContent = row.level;
+
+    const bar = document.createElement("span");
+    bar.className = "mood-dist-bar";
+    const fill = document.createElement("span");
+    fill.className = "mood-dist-fill";
+    fill.style.width = `${row.pct}%`;
+    fill.style.background = `var(--mood-${row.level})`;
+    bar.appendChild(fill);
+
+    const count = document.createElement("span");
+    count.className = "mood-dist-count";
+    count.textContent = String(row.count);
+
+    li.append(level, bar, count);
+    host.appendChild(li);
+  }
+}
+
+function paintMoodRecent(days) {
+  const host = $("#mood-recent");
+  host.innerHTML = "";
+  const recent = recentDays(days, 14);
+  if (!recent.length) {
+    const li = document.createElement("li");
+    li.className = "mood-empty";
+    li.textContent = "No days logged in this range yet.";
+    host.appendChild(li);
+    return;
+  }
+  for (const day of recent) {
+    const li = document.createElement("li");
+    const date = document.createElement("span");
+    date.className = "mood-recent-date";
+    date.textContent = friendlyDate(day.date, todayIso());
+
+    const mood = document.createElement("span");
+    mood.className = "mood-recent-mood";
+    mood.textContent = moodEmoji(day.mood) || "\u2013";
+
+    const pain = document.createElement("span");
+    pain.className = "mood-recent-pain";
+    pain.textContent = `pain ${painText(day.pain)}`;
+
+    const notes = document.createElement("span");
+    notes.className = "mood-recent-notes";
+    notes.textContent = (day.notes || []).map((n) => n.title).join(", ");
+
+    li.append(date, mood, pain, notes);
+    host.appendChild(li);
+  }
+}
+
 function moveInk() {
   positionInk(
     document.querySelector(".tabs"),
@@ -1497,7 +1826,7 @@ function syncHash() {
   if (location.hash !== next) history.replaceState(null, "", next);
 }
 
-const VALID_VIEWS = ["rapid", "board", "collections", "timeline", "calendar"];
+const VALID_VIEWS = ["rapid", "board", "mood", "collections", "timeline", "calendar"];
 
 function readHash() {
   const { view, note } = parseHash();
@@ -1547,6 +1876,29 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   $$(".mood").forEach((b) => b.addEventListener("click", () => pickMood(b.dataset.mood)));
   $(".mood-clear").addEventListener("click", () => pickMood(""));
+  // `input` here, not `change`: the editor does not write until Save, so there
+  // is no per-pixel vault write to avoid, and the label should track the drag.
+  $("#note-pain").addEventListener("input", (e) => pickPain(e.target.value));
+  $("#note-pain-clear").addEventListener("click", () => pickPain(""));
+
+  // -- mood view
+  $("#mood-log-picks").addEventListener("click", (e) => {
+    const btn = e.target.closest(".mood-pick");
+    if (btn) logMood(btn.dataset.mood, undefined);
+  });
+  // `change`, not `input`: input fires on every pixel of the drag, and each one
+  // would be a write to the vault.
+  $("#mood-log-pain").addEventListener("change", (e) => {
+    logMood(undefined, Number(e.target.value));
+  });
+  $("#mood-log-clear").addEventListener("click", () => logMood(null, null));
+  $$("[data-mood-range]").forEach((b) => b.addEventListener("click", () => {
+    state.moodDays = Number(b.dataset.moodRange);
+    $$("[data-mood-range]").forEach((o) => {
+      o.setAttribute("aria-pressed", String(o === b));
+    });
+    renderMood();
+  }));
   $$(".editor-tab").forEach((t) => t.addEventListener("click", () => setEditorMode(t.dataset.mode)));
 
   $("#note-tags-input").addEventListener("keydown", (e) => {

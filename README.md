@@ -33,6 +33,7 @@ Deep links (shareable, and they survive reload):
 ```
 #/                          rapid log
 #/view/board                kanban board
+#/view/mood                 mood & pain heatmap
 #/view/calendar             calendar tab
 #/note/<id>                 a specific note
 #/view/timeline/note/<id>   a note with the timeline tab selected
@@ -64,12 +65,13 @@ Design decisions worth knowing before you edit it:
   `input:not([type="checkbox"])` (specificity 0,1,1). To override it for a
   single field you need at least a two-class selector — see
   `.sheet-head input.doc-title`.
-- **Board mode re-grids the page.** `.layout.is-board` swaps the sidebar for the
-  board and keeps the editor as a second column; `.is-board-empty` collapses the
-  editor when no card is open. Both classes are set by `syncLayoutMode()` from
-  `render()` **and** from `openEditor()` — a click that only sets `activeId`
-  leaves the layout in its empty mode and CSS silently hides the editor, so any
-  new path that opens a note must re-sync.
+- **A wide view re-grids the page.** `.layout.is-wide` swaps the sidebar for the
+  view and keeps the editor as a second column; `.is-wide-empty` collapses the
+  editor when no note is open. Both classes are derived from `activeView` by
+  `syncLayoutMode()` — which `render()` and `openEditor()` both call, because a
+  click that only sets `activeId` would leave the layout in its empty mode and
+  CSS would silently hide the editor. Adding a wide view means adding it to
+  `WIDE_VIEWS`; nothing else has to remember.
 
 ### Visual verification
 
@@ -82,12 +84,19 @@ The UI is checked headlessly, not by eyeball alone:
 
 `check_render.sh` loads the page in headless Chromium, dumps the post-JS DOM
 and asserts that entries, counts, the tab ink, both editor panes, the rendered
-markdown, tag chips, backlinks, the board's five columns and cards, and the
-calendar legend all actually rendered — so a JS exception fails the check
-instead of silently producing a blank pane. It makes **two** passes, and the
-second one matters: it loads `#/view/board/note/<id>` and asserts the layout is
-in board mode *and not* in its empty mode, which is the regression guard for
-"clicking a card opened nothing".
+markdown, tag chips, backlinks, the board's five columns and cards, the mood
+heatmap and its logging row, and the calendar legend all actually rendered — so
+a JS exception fails the check instead of silently producing a blank pane.
+
+It makes **three** passes, and the latter two matter most: the board loads
+`#/view/board/note/<id>` and asserts the layout is in wide mode *and not* in its
+empty state (the regression guard for "clicking a card opened nothing"), and the
+mood view loads `#/view/mood` and asserts the opposite — wide mode *and* empty,
+because no note is open there.
+
+Fixtures use the extremes of the scale (`mood: bad`, `pain: 10`) on purpose: a
+day collapses to its worst mood and highest pain, so nothing already in the vault
+can override them and make the assertions depend on the user's own data.
 
 `shot.sh` uses a throwaway `--user-data-dir`, which sidesteps the profile lock
 that blocks screenshotting while a normal browser session is open.
@@ -111,6 +120,8 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
 - **Rapid Log** — type `• task`, `○ event`, `– note` and hit Enter
 - **Board** — a kanban view with real dependencies: columns, drag or tap to
   move, blocked cards, cycle-safe blockers (see [Task management](#task-management))
+- **Mood & pain** — a year-at-a-glance heatmap with one-tap logging, streaks and
+  a distribution (see [Mood & pain](#mood--pain))
 - **Collections** — NeatNook-style curation, create + filter
 - **Timeline** — Agenda-style date-filter view
 - **Calendar** — month grid with per-day counts, click-through
@@ -178,6 +189,51 @@ Design decisions worth knowing before you edit any of it:
   (see `reconcile_move`) — that is what makes "leave Done" reopen rather than
   contradict itself.
 
+## Mood & pain
+
+The **Mood** tab is a year of weeks — a GitHub-style heatmap where each cell is
+a day, coloured by mood, with a ring on days where pain reached 5 or more.
+
+Logging is one tap. The **How's today?** row writes straight to a note dated
+today and tagged `#mood`; touching a face or the pain slider saves immediately,
+so there is nothing to submit. Reading is the point of the grid, so logging has
+to cost nothing or the grid stays empty.
+
+```yaml
+mood: low      # great | good | meh | low | bad
+pain: 7        # 0-10, or absent
+```
+
+Decisions worth knowing before you edit any of it:
+
+- **The reading lives on a note, not in its own table.** Both fields are just
+  frontmatter on any note at all, so logging a mood does not create a parallel
+  store — and a hand-written note with `mood:` and `pain:` shows up in the grid
+  without being imported.
+- **A note's reading belongs to its dates, or to the day it was captured.** A
+  note carrying `dates:` counts for each of them (that is how you backfill a week
+  you did not write up); an undated note counts for `created`. This is the one
+  place a note's mood is not simply "today".
+- **A day collapses to its *worst* mood and its *highest* pain.** Averaging is
+  the obvious thing and it is wrong here: a good morning and a bad evening
+  average into a flat "meh", which hides exactly the day you would want to look
+  back at. The individual readings stay on the day (the recent-days list shows
+  them), so nothing is lost — only the summary is pessimistic.
+- **Logging never hijacks a note you wrote.** The view writes only to a note
+  already tagged `#mood`, and derives its id from the date (`mood-2026-09-23`),
+  so there can only ever be one check-in per day and a journal entry dated today
+  is left alone.
+- **Unlogged days are drawn, not skipped.** A faint cell means "in range, not
+  logged"; a transparent one means "outside the range you asked for". Filling
+  the gaps client-side is what lets the grid keep every weekday in its column.
+- **`pain` is clamped, not rejected.** A `12` on a bad day is a real thing to
+  type; refusing to save it loses the entry, so it is clamped to 10 on the way
+  in and on the way off disk.
+- **An unrecognised mood is preserved, not normalised.** A foreign or
+  hand-written vault may say `mood: happy`. Rewriting that to nothing on the
+  next save would be data loss, so filtering to the five known levels happens
+  when the series is *plotted*, never when a note is parsed.
+
 ## API
 
 - `GET    /api/health`
@@ -189,6 +245,8 @@ Design decisions worth knowing before you edit any of it:
 - `PATCH  /api/notes/{id}`
 - `DELETE /api/notes/{id}`
 - `GET    /api/search?q=`
+- `GET    /api/mood?days=&start=&end=` → a collapsed record per logged day, plus
+  `summary` (days logged, streak, averages, counts) and the level vocabulary
 - `GET    /api/calendar/{year}/{month}` → `{"YYYY-MM-DD": count, ...}`
 - `POST   /api/recurring/run` → instantiate due recurring notes now
 - `GET    /api/export.zip` → download the vault as a zip
@@ -243,6 +301,8 @@ A task note's frontmatter carries its board state:
 stage: doing          # backlog | todo | doing | review | done
 blocked_by: [outline] # ids of the notes it waits on
 position: 2.0         # order within its column
+mood: low             # great | good | meh | low | bad
+pain: 7               # 0-10, optional
 ```
 
 ## Obsidian
@@ -319,12 +379,14 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 176 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 238 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
-                 #              deps (graph/order), board (columns/blockers/moves)
-make test-js     # 66 node:test — rapid-log parsing, calendar maths, wikilinks, display helpers, board helpers
+                 #              deps (graph/order), board (columns/blockers/moves),
+                 #              mood (series/streaks/collapse/coercion)
+make test-js     # 89 node:test — rapid-log parsing, calendar maths, wikilinks,
+                 #              display helpers, board helpers, mood grid helpers
 make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
-./tools/check_render.sh   # 53 DOM assertions in headless Chromium
+./tools/check_render.sh   # 71 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether

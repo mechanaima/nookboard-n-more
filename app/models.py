@@ -101,6 +101,49 @@ def _coerce(enum_cls, value, default):
         return default
 
 
+#: Mood levels, best -> worst. This order is the colour ramp: the UI paints
+#: index 0 as the brightest cell and the last as the darkest.
+MOOD_LEVELS: tuple[str, ...] = ("great", "good", "meh", "low", "bad")
+
+#: Numeric score per level, so a day's mood can be averaged or compared.
+#: Deliberately not exposed as a raw number to the user — the UI shows words.
+MOOD_SCORE: dict[str, int] = {
+    level: len(MOOD_LEVELS) - i for i, level in enumerate(MOOD_LEVELS)
+}
+
+#: Pain is a 0-10 self-report, matching how pain is described clinically.
+PAIN_MIN, PAIN_MAX = 0, 10
+
+
+def normalize_mood(value: object) -> Optional[str]:
+    """Return a known mood level, or None for anything else.
+
+    A vault may have been written by hand, or by an older/foreign tool, so an
+    unrecognised mood is not an error — it is simply not a level we can plot.
+    Mapping it to None keeps junk out of the series instead of inventing a
+    colour for it.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    return text if text in MOOD_SCORE else None
+
+
+def coerce_pain(value: object) -> Optional[int]:
+    """Clamp a pain reading to 0-10, or None when there is nothing to read.
+
+    Out-of-range values are clamped rather than rejected: a 12 on a bad day is
+    a real thing someone types, and refusing to save it loses the entry.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return max(PAIN_MIN, min(PAIN_MAX, number))
+
+
 @dataclass(frozen=True)
 class Note:
     id: str
@@ -113,6 +156,10 @@ class Note:
     parent_id: Optional[str] = None
     created: date = field(default_factory=date.today)
     mood: Optional[str] = None
+    #: 0-10 self-reported pain, or None when it was not logged. Kept alongside
+    #: mood because neither one alone says much: a low mood with low pain and a
+    #: low mood with high pain are different days.
+    pain: Optional[int] = None
     tags: list[str] = field(default_factory=list)
     recurrence: Optional[str] = None  # "daily" | "weekly" | "monthly"
     # -- task management ----------------------------------------------------
@@ -140,6 +187,7 @@ class Note:
             "parent_id": self.parent_id,
             "created": self.created.isoformat(),
             "mood": self.mood,
+            "pain": self.pain,
             "tags": list(self.tags),
             "recurrence": self.recurrence,
             "stage": self.stage,
@@ -221,6 +269,7 @@ class Note:
             parent_id=meta.get("parent_id"),
             created=created,
             mood=meta.get("mood"),
+            pain=coerce_pain(meta.get("pain")),
             tags=tags,
             recurrence=meta.get("recurrence"),
             stage=stage,

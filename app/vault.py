@@ -64,7 +64,7 @@ class Vault:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(note.to_markdown())
         if self.db is not None:
-            self.db.upsert(note, mood=note.mood)
+            self.db.upsert(note)
         return p
 
     def read(self, note_id: str) -> Note:

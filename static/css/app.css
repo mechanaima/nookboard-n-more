@@ -9,7 +9,8 @@
      5. sidebar        10. calendar
                        12. motion
                        13. board (kanban) + dependencies
-                       14. responsive
+                       14. mood + pain
+                       15. responsive
    ========================================================================== */
 
 /* 1. tokens ---------------------------------------------------------------- */
@@ -820,7 +821,7 @@ textarea { resize: vertical; line-height: 1.6; }
   color: var(--subtext0);
   min-width: 82px;
 }
-.mood-clear {
+.mood-clear, .mood-log-clear {
   appearance: none;
   background: transparent;
   border: 1px solid var(--line);
@@ -831,7 +832,7 @@ textarea { resize: vertical; line-height: 1.6; }
   cursor: pointer;
   transition: color .16s, border-color .16s, background .16s;
 }
-.mood-clear:hover {
+.mood-clear:hover, .mood-log-clear:hover {
   color: var(--red);
   border-color: color-mix(in srgb, var(--red) 45%, transparent);
   background: color-mix(in srgb, var(--red) 10%, transparent);
@@ -1411,10 +1412,14 @@ textarea { resize: vertical; line-height: 1.6; }
 /* 13. board (kanban) + dependencies --------------------------------------- */
 /* Board mode swaps the sidebar for the board and keeps the editor alongside,
    so you can wire dependencies while looking at the cards. */
-.layout.is-board { grid-template-columns: 1fr minmax(380px, 33vw); }
-.layout.is-board .sidebar { display: none; }
-.layout.is-board.is-board-empty { grid-template-columns: 1fr; }
-.layout.is-board.is-board-empty .editor { display: none; }
+/* ---- wide views (board, mood) ------------------------------------------- */
+/* A wide view takes the sidebar's place and keeps the editor as a second
+   column; `is-wide-empty` collapses the editor when no note is open. Both
+   classes come from syncLayoutMode(), never from a view's own code. */
+.layout.is-wide { grid-template-columns: 1fr minmax(380px, 33vw); }
+.layout.is-wide .sidebar { display: none; }
+.layout.is-wide.is-wide-empty { grid-template-columns: 1fr; }
+.layout.is-wide.is-wide-empty .editor { display: none; }
 
 .board-view {
   display: flex;
@@ -1796,11 +1801,257 @@ textarea { resize: vertical; line-height: 1.6; }
 .deps-blocking-wrap .field-label { display: block; margin-bottom: 7px; }
 .deps-list--passive { margin-bottom: 0; }
 
-/* 14. responsive ---------------------------------------------------------- */
+/* 14. mood + pain --------------------------------------------------------- */
+/* A year of weeks is read at a glance, so the grid is the centre of this view
+   and everything else is annotation around it. */
+.mood-view {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  padding: 18px 22px 24px;
+  overflow-y: auto;
+  min-height: 0;
+  min-width: 0;
+}
+.mood-view.hidden { display: none; }
+
+.mood-bar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.mood-title { margin: 0; font-size: 17px; color: var(--lavender); }
+.mood-hint {
+  margin: 5px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--fg-faint);
+  max-width: 56ch;
+}
+.mood-hint b { color: var(--fg-dim); font-weight: 600; }
+.mood-ranges { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* ---- logging today ------------------------------------------------------ */
+.mood-log {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 11px 14px;
+  background: color-mix(in srgb, var(--crust) 46%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.mood-log-label { font-size: 13px; color: var(--fg-dim); }
+.mood-log-picks { display: flex; gap: 6px; }
+.mood-pick {
+  width: 34px; height: 34px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  /* Muted until chosen, so the row reads as a set of options rather than five
+     equally-loud buttons. */
+  filter: grayscale(.55) opacity(.72);
+  transition: filter .14s, transform .14s var(--ease-pop), border-color .14s;
+}
+.mood-pick:hover { filter: none; transform: translateY(-2px); }
+.mood-pick.active {
+  filter: none;
+  border-color: var(--mauve);
+  background: color-mix(in srgb, var(--mauve) 16%, transparent);
+}
+.mood-log-pain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--fg-dim);
+}
+/* Form controls are styled globally via `input:not([type=checkbox])`, which
+   would give a range input a 100%-wide bordered box. Override it. */
+.pain-row input[type="range"],
+.mood-log-pain input[type="range"] {
+  width: 132px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  accent-color: var(--mauve);
+}
+.mood-log-pain-out,
+.pain-out {
+  min-width: 3.4em;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.pain-out.is-unset { color: var(--fg-faint); }
+
+/* ---- summary chips ------------------------------------------------------ */
+.mood-stats { display: flex; flex-wrap: wrap; gap: 8px; }
+.mood-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 12px;
+  background: color-mix(in srgb, var(--surface0) 40%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+.mood-stat-value { font-size: 15px; color: var(--fg); font-variant-numeric: tabular-nums; }
+.mood-stat-label { font-size: 10.5px; color: var(--fg-faint); }
+.mood-stats-empty {
+  font-size: 12.5px;
+  color: var(--fg-faint);
+  padding: 7px 0;
+}
+
+/* ---- heatmap ------------------------------------------------------------ */
+/* Cells are emitted week by week and flowed into columns, so each week is one
+   column without the markup having to build a grid. */
+.mood-scroll { overflow-x: auto; padding-bottom: 6px; }
+.mood-heatmap {
+  --cell: 13px;
+  --cell-gap: 3px;
+  display: inline-flex;
+  gap: 6px;
+}
+.mood-daycol {
+  display: grid;
+  grid-template-rows: repeat(7, var(--cell));
+  gap: var(--cell-gap);
+  padding-top: calc(14px + 4px); /* clear the month row */
+}
+.mood-daycol span {
+  font-size: 9.5px;
+  line-height: var(--cell);
+  color: var(--fg-faint);
+  text-align: right;
+}
+.mood-months {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: var(--cell);
+  gap: var(--cell-gap);
+  height: 14px;
+  margin-bottom: 4px;
+}
+/* One per week; blank unless the month changed. The label is wider than the
+   column and simply overflows, which is what an axis label should do. */
+.mood-month {
+  font-size: 9.5px;
+  line-height: 14px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+.mood-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(7, var(--cell));
+  grid-auto-columns: var(--cell);
+  gap: var(--cell-gap);
+}
+.mood-cell {
+  width: var(--cell);
+  height: var(--cell);
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+.mood-cell--out { background: transparent; }
+.mood-cell--none { background: color-mix(in srgb, var(--overlay0) 20%, transparent); }
+.mood-cell--great { background: var(--mood-great); }
+.mood-cell--good  { background: var(--mood-good); }
+.mood-cell--meh   { background: var(--mood-meh); }
+.mood-cell--low   { background: var(--mood-low); }
+.mood-cell--bad   { background: var(--mood-bad); }
+/* A high-pain day is ringed rather than recoloured: the fill already means
+   "mood", and one cell cannot carry two hues. */
+.mood-cell--pain { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--crust) 78%, transparent); }
+.mood-cell[role="button"] { cursor: pointer; }
+.mood-cell[role="button"]:hover { border-color: var(--fg); }
+
+.mood-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.mood-legend-ramp { display: flex; gap: 3px; }
+/* The legend swatches reuse the cell colours, so the key cannot drift from
+   what the grid actually paints. */
+.mood-legend-ramp i {
+  width: 11px; height: 11px;
+  border-radius: 3px;
+  display: block;
+}
+.mood-legend-gap { width: 16px; }
+.mood-scroll-hint { margin-left: auto; color: var(--fg-faint); font-style: italic; }
+.mood-scroll-hint.hidden { display: none; }
+.mood-legend-pain {
+  width: 11px; height: 11px;
+  border-radius: 3px;
+  display: block;
+  background: var(--mood-meh);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--crust) 78%, transparent);
+}
+
+/* ---- lower panels ------------------------------------------------------- */
+.mood-lower {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.mood-panel-title {
+  margin: 0 0 9px;
+  font-size: 12px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.mood-recent, .mood-distribution { list-style: none; margin: 0; padding: 0; }
+.mood-recent li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  font-size: 12.5px;
+}
+.mood-recent li:last-child { border-bottom: 0; }
+.mood-recent-date { width: 68px; flex-shrink: 0; color: var(--fg-faint); }
+.mood-recent-mood { font-size: 15px; line-height: 1; }
+.mood-recent-pain { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.mood-recent-notes { color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mood-empty { font-size: 12.5px; color: var(--fg-faint); padding: 6px 0; }
+
+.mood-distribution li {
+  display: grid;
+  grid-template-columns: 46px 1fr 30px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.mood-dist-level { color: var(--fg-dim); }
+.mood-dist-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--overlay0) 18%, transparent);
+  overflow: hidden;
+}
+/* `display: block` is load-bearing: the fill is a bare <span>, and an inline box
+   ignores width and height, so without this every bar renders 0px wide. (The
+   track escapes the same fate only because its parent is a grid, which
+   blockifies its children.) */
+.mood-dist-fill { display: block; height: 100%; border-radius: 4px; }
+.mood-dist-count { text-align: right; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+
+/* 15. responsive ---------------------------------------------------------- */
 @media (max-width: 1320px) {
   /* The board needs room for five columns; shrink the editor rather than
      letting the columns collapse into unreadable slivers. */
-  .layout.is-board { grid-template-columns: 1fr minmax(330px, 30vw); }
+  .layout.is-wide { grid-template-columns: 1fr minmax(330px, 30vw); }
 }
 
 @media (max-width: 1120px) {
@@ -1808,18 +2059,23 @@ textarea { resize: vertical; line-height: 1.6; }
   .meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .field--wide { grid-column: span 2; }
   /* Below this the board becomes the primary surface and scrolls sideways. */
-  .layout.is-board, .layout.is-board.is-board-empty { grid-template-columns: 1fr; }
+  .layout.is-wide, .layout.is-wide.is-wide-empty { grid-template-columns: 1fr; }
   .board-columns { grid-template-columns: repeat(5, minmax(230px, 1fr)); }
+  /* The two mood panels stop reading as columns before they stop fitting. */
+  .mood-lower { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 860px) {
   html, body { overflow: auto; }
   .layout { grid-template-columns: 1fr; height: auto; }
-  .layout.is-board { height: auto; }
-  .layout.is-board.is-board-empty .editor { display: block; }
+  .layout.is-wide { height: auto; }
+  .layout.is-wide.is-wide-empty .editor { display: block; }
   .board-view { padding: 12px 12px 16px; }
   .board-columns { grid-template-columns: repeat(5, 250px); }
   .board-hint { display: none; }
+  .mood-view { padding: 12px 12px 18px; }
+  .mood-log { gap: 10px; }
+  .mood-heatmap { --cell: 11px; }
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid var(--line);

@@ -5,7 +5,7 @@ import io
 import json
 import zipfile
 from pathlib import Path
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from dataclasses import replace
@@ -21,8 +21,10 @@ from .deps import (
     resolve, sort_column, stage_of, blocking as blocking_notes,
 )
 from .models import (
-    STAGE_LABELS, Note, Signifier, Stage, Status, reconcile, stage_for_status,
+    MOOD_LEVELS, PAIN_MAX, PAIN_MIN, STAGE_LABELS, Note, Signifier, Stage, Status,
+    coerce_pain, reconcile, stage_for_status,
 )
+from . import mood as moodlib
 from .vault import Vault
 from .db import Database
 from .ics import notes_to_ics
@@ -41,6 +43,7 @@ class NoteIn(BaseModel):
     dates: list[date] = Field(default_factory=list)
     parent_id: Optional[str] = None
     mood: Optional[str] = None
+    pain: Optional[int] = None
     tags: list[str] = Field(default_factory=list)
     recurrence: Optional[str] = None
     stage: Optional[str] = None
@@ -184,6 +187,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             dates=payload.dates,
             parent_id=payload.parent_id,
             mood=payload.mood,
+            pain=coerce_pain(payload.pain),
             tags=payload.tags,
             recurrence=payload.recurrence,
             stage=stage,
@@ -229,7 +233,11 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             status=status,
             dates=new_dates,
             parent_id=payload.get("parent_id", existing.parent_id),
+            # `.get(..., existing)` so an absent key keeps the value while an
+            # explicit null clears it — the API could always express "no mood",
+            # it was the index write that used to quietly keep the old one.
             mood=payload.get("mood", existing.mood),
+            pain=coerce_pain(payload.get("pain", existing.pain)),
             tags=payload.get("tags", existing.tags),
             recurrence=payload.get("recurrence", existing.recurrence),
             stage=stage,
@@ -243,6 +251,35 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
     def delete_note(note_id: str):
         vault.delete(note_id)
         return None
+
+    @app.get("/api/mood")
+    def mood_series(
+        days: int = 365,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
+    ):
+        """Mood and pain by day, plus headline numbers.
+
+        Defaults to the last year: a mood tracker is read for its shape over
+        time, and a range shorter than a few months has no shape to see.
+        """
+        today = date.today()
+        end = end or today
+        start = start or (end - timedelta(days=max(1, min(days, 3650)) - 1))
+        if start > end:
+            raise HTTPException(400, "start is after end")
+        series = moodlib.daily_series(vault.list_all(), start=start, end=end)
+        return {
+            "from": start.isoformat(),
+            "to": end.isoformat(),
+            "today": today.isoformat(),
+            "days": series,
+            "summary": moodlib.summarize(series, today=today),
+            # Sent so the client labels the colour ramp without hard-coding the
+            # level names — the vocabulary belongs in the model, not the CSS.
+            "levels": list(MOOD_LEVELS),
+            "pain_range": {"min": PAIN_MIN, "max": PAIN_MAX},
+        }
 
     @app.get("/api/search")
     def search(q: str = ""):

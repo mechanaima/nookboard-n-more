@@ -17,6 +17,8 @@ TARGET_ID="render-check-target"
 NOTE_ID="render-check"
 BOARD_ID="render-check-blocked"
 BOARD_BLOCKER="render-check-blocker"
+MOOD_ID="render-check-mood"
+TODAY="$(date +%F)"
 
 if ! curl -sf --max-time 3 "$BASE/api/health" >/dev/null; then
   echo "!! no server at $BASE — start it with 'make dev' first" >&2
@@ -26,11 +28,12 @@ fi
 PROFILE="$(mktemp -d /tmp/nookboard-check-XXXXXX)"
 DOM="$(mktemp /tmp/nookboard-dom-XXXXXX.html)"
 BOARD_DOM="$(mktemp /tmp/nookboard-board-XXXXXX.html)"
+MOOD_DOM="$(mktemp /tmp/nookboard-mood-XXXXXX.html)"
 cleanup() {
-  for id in "$NOTE_ID" "$TARGET_ID" "$BOARD_ID" "$BOARD_BLOCKER"; do
+  for id in "$NOTE_ID" "$TARGET_ID" "$BOARD_ID" "$BOARD_BLOCKER" "$MOOD_ID"; do
     curl -s -o /dev/null -X DELETE "$BASE/api/notes/$id" || true
   done
-  rm -rf "$PROFILE" "$DOM" "$BOARD_DOM"
+  rm -rf "$PROFILE" "$DOM" "$BOARD_DOM" "$MOOD_DOM"
 }
 trap cleanup EXIT
 
@@ -59,6 +62,20 @@ curl -sf -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/js
   \"signifier\": \"task\", \"status\": \"open\", \"stage\": \"doing\",
   \"blocked_by\": [\"$BOARD_BLOCKER\"]
 }" || { echo "!! could not seed board fixture" >&2; exit 1; }
+
+# Mood fixture: dated today and tagged #mood, so it is the check-in note the
+# view writes to — which is what makes the "today" row show an active pick and
+# a pain reading.
+#
+# mood "bad" and pain 10 are the extremes on purpose: a day collapses to its
+# worst mood and its highest pain, so nothing already in the vault can override
+# these. A mid-range fixture would make the assertions depend on whatever else
+# happens to be dated today.
+curl -sf -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/json' -d "{
+  \"id\": \"$MOOD_ID\", \"collection\": \"inbox\", \"title\": \"Render Check Mood\",
+  \"signifier\": \"note\", \"status\": \"open\", \"dates\": [\"$TODAY\"],
+  \"tags\": [\"mood\"], \"mood\": \"bad\", \"pain\": 10
+}" || { echo "!! could not seed mood fixture" >&2; exit 1; }
 
 pass=0; fail=0
 check_file() { # dom-file, name, extended-regex
@@ -162,14 +179,59 @@ check_board "fixture card rendered"        'data-id="render-check-blocked"'
 check_board "blocker card rendered"        'data-id="render-check-blocker"'
 check_board "card move controls rendered"  'class="card__bitem'
 check_board "board filters rendered"       'id="board-blocked-only"'
-check_board "layout in board mode"         'class="layout is-board"'
+check_board "layout in wide mode"           'class="layout is-wide"'
 # The regression guard for "clicking a card opened nothing": when a note is
-# open the layout must NOT be in its empty-board state, or CSS hides the editor.
-check_board_absent "layout not in empty-board mode" 'layout is-board is-board-empty'
+# open the layout must NOT be in its empty state, or CSS hides the editor.
+check_board_absent "layout not in empty state" 'layout is-wide is-wide-empty'
 check_board "blocked card badge rendered"  'class="card__blocked"'
 check_board "lock glyph on blocked card"   '🔒'
 check_board "dependency chip rendered"     'class="dep-chip'
 check_board "blocked state on the note"    'deps-state--blocked'
+
+# --- render 3: the mood view, with today logged ----------------------------
+# Same layout invariant as the board (a wide view must re-grid on load), plus
+# the pieces the mood view is actually made of.
+MOOD_URL="$BASE/#/view/mood"
+chromium --headless=new --disable-gpu --no-sandbox \
+  --user-data-dir="$PROFILE" --virtual-time-budget=5000 \
+  --dump-dom "$MOOD_URL" > "$MOOD_DOM" 2>/dev/null
+
+check_mood() { check_file "$MOOD_DOM" "$1" "$2"; }
+check_mood_absent() { check_absent "$MOOD_DOM" "$1" "$2"; }
+check_count() { # dom-file, name, extended-regex, expected-hits
+  local got
+  got="$(grep -oE -- "$3" "$1" | wc -l)"
+  if [ "$got" -eq "$4" ]; then
+    echo "  ok   $2 ($got)"; pass=$((pass+1))
+  else
+    echo "  FAIL $2 (expected $4, got $got)"; fail=$((fail+1))
+  fi
+}
+
+echo "rendering $MOOD_URL  ($(wc -c < "$MOOD_DOM") bytes of DOM)"
+
+check_mood "mood tab marked active"        'data-view="mood"[^>]*class="tab active"|class="tab active"[^>]*data-view="mood"'
+check_mood "mood view rendered"            'id="mood-view" class="mood-view"'
+check_mood "layout in wide mode"           'class="layout is-wide'
+# No note is open here, so the editor must be collapsed rather than showing an
+# empty pane — the same layout machinery the board uses.
+check_mood "editor collapsed with no note" 'class="layout is-wide is-wide-empty"'
+check_mood "summary chips rendered"        'class="mood-stat-value"'
+check_mood "logged-today pick is active"   'class="mood-pick active" data-mood="bad"'
+check_mood "pain reading shown as 10/10"   'id="mood-log-pain-out"[^>]*>10/10<'
+check_count "$MOOD_DOM" "five mood picks offered" 'class="mood-pick' 5
+# Legend swatches are the only <i> in the view; the distribution bars are spans.
+# `title` serializes before `style`, so match on the pair rather than on `<i style=`.
+check_count "$MOOD_DOM" "five legend swatches" '<i title="[a-z]+" style="background: var\(--mood-' 5
+check_count "$MOOD_DOM" "distribution rows"    'class="mood-dist-level"' 5
+check_mood "heatmap grid rendered"         'class="mood-grid"'
+check_mood "heatmap cells rendered"        'class="mood-cell'
+check_mood "logged cell painted as bad"    'class="mood-cell mood-cell--bad'
+check_mood "high-pain day is ringed"       'mood-cell--pain'
+check_mood "month axis rendered"           'class="mood-months"'
+check_mood "weekday labels rendered"       'class="mood-daycol"'
+check_mood "recent days panel filled"      'class="mood-recent-date"|class="mood-empty"'
+check_mood "scroll affordance present"     'id="mood-scroll-hint"'
 
 echo
 echo "pass=$pass fail=$fail"
