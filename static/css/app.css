@@ -3292,11 +3292,12 @@ textarea { resize: vertical; line-height: 1.6; }
   display: grid; place-items: center;
   padding: clamp(10px, 4vw, 46px);
 }
-.modal__backdrop {
-  position: absolute; inset: 0;
-  background: color-mix(in srgb, var(--wall) 80%, black);
-  backdrop-filter: blur(3px);
-}
+/* Opaque, and not a scrim over a blurred page: the same wall the rest of the app
+   stands on. A translucent backdrop left the editor column visible behind the dialog,
+   so the note you were reading appeared twice -- once in the dialog and once beside it
+   -- and "focused" is the whole point of a dialog. The panel is a step above the wall,
+   so it still reads as a surface rather than as a hole. */
+.modal__backdrop { position: absolute; inset: 0; background: var(--wall); }
 .modal__panel {
   position: relative; z-index: 1; display: flex; flex-direction: column;
   width: min(920px, 100%); max-height: 100%; min-height: 0;
