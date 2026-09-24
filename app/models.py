@@ -294,6 +294,12 @@ class Note:
     #: when it was last committed. Kept as the person wrote it (`~/...` and all)
     #: because the path is theirs to recognise, and expanded only when read.
     path: Optional[str] = None
+    #: An address this note *is about* -- a service, a page, someone else's machine.
+    #: A note with one is a bookmark. Kept exactly as written and never normalized:
+    #: the person's own link is the truth, and whether a browser can open it is
+    #: `app.bookmarks`' answer to give, not this model's to enforce. A typo must not
+    #: cost you the note -- the same reasoning as an unreadable `at:`.
+    url: Optional[str] = None
     parent_id: Optional[str] = None
     created: date = field(default_factory=date.today)
     mood: Optional[str] = None
@@ -340,6 +346,7 @@ class Note:
             "at": parse_time(self.at),
             "until": parse_time(self.until),
             "path": self.path,
+            "url": self.url,
             "parent_id": self.parent_id,
             "created": self.created.isoformat(),
             "mood": self.mood,
@@ -402,6 +409,11 @@ class Note:
         # -- arrives as an int and would otherwise be compared as one.
         path = meta.get("path")
         path = str(path) if path is not None else None
+        # Same treatment as a path, and for the same reason: str() because a url that
+        # happens to parse as a number arrives as an int, and comparing ints to urls is
+        # how you get a link that silently is not one.
+        url = meta.get("url")
+        url = str(url) if url is not None else None
 
         try:
             created = date.fromisoformat(str(meta["created"])) if meta.get("created") else date.today()
@@ -447,6 +459,7 @@ class Note:
             at=at,
             until=until,
             path=path,
+            url=url,
             parent_id=meta.get("parent_id"),
             created=created,
             mood=meta.get("mood"),
@@ -476,6 +489,9 @@ class Note:
         # The path as written. Whether it is a workspace, and what that workspace
         # holds, is `app.workspace`'s answer -- not this model's.
         d["path"] = self.path
+        # The address as written. Whether a browser can open it, and what group it
+        # belongs to, is `app.bookmarks`' answer.
+        d["url"] = self.url
         d["time_label"] = schedule_label(self)
         d["created"] = self.created.isoformat()
         # asdict() leaves these as date objects, which are not JSON.
