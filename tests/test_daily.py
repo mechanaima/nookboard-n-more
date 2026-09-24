@@ -147,8 +147,8 @@ def test_render_names_the_collection_only_when_it_says_something():
         [_note("a", "Fix printer"), _note("b", "Print run", collection="zines")],
         None,
     )
-    assert "- Fix printer\n" in section
-    assert "- Print run — zines" in section
+    assert "- [[Fix printer]]\n" in section
+    assert "- [[Print run]] — zines" in section
 
 
 def test_render_survives_a_missing_recap():
@@ -437,7 +437,7 @@ def test_daily_notes_do_not_clutter_the_board(make_client):
     ids = [card["id"] for col in board["columns"] for card in col["cards"]]
     assert not [i for i in ids if i.startswith("daily-")], ids
     # ...but the board admits what it is holding back rather than looking smaller.
-    assert board["hidden_daily"] == 1
+    assert board["hidden_generated"] == 1
     assert [card["id"] for col in board["columns"] for card in col["cards"]] == ["a"]
 
 

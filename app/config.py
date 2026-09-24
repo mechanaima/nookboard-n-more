@@ -31,6 +31,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name, "").strip()
     try:
@@ -49,6 +56,10 @@ class Settings:
     #: Hour (0-23) the end-of-day summary runs, or -1 to switch the scheduler
     #: off entirely. One hour, not a cron expression: see daily.is_due.
     daily_summary_hour: int = 22
+    #: Whether to also write a weekly review. Shares `daily_summary_hour` as its
+    #: cutoff -- the same question ("has the period's cutoff passed?") and one
+    #: constant, so the two cannot drift about what "after the cutoff" means.
+    weekly_summary: bool = True
 
     @property
     def llm_chat_url(self) -> str:
@@ -67,4 +78,5 @@ def load_settings() -> Settings:
         llm_max_tokens=_env_int("NOOKBOARD_LLM_MAX_TOKENS", 4096),
         llm_timeout=_env_float("NOOKBOARD_LLM_TIMEOUT", 300.0),
         daily_summary_hour=_env_int("NOOKBOARD_DAILY_SUMMARY_HOUR", 22),
+        weekly_summary=_env_bool("NOOKBOARD_WEEKLY_SUMMARY", True),
     )

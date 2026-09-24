@@ -67,8 +67,9 @@ STAGE_LABELS = {
 }
 
 
-#: Ids the daily-summary feature generates: `daily-YYYY-MM-DD`.
+#: Ids the summary features generate: `daily-YYYY-MM-DD`, `weekly-YYYY-Www`.
 DAILY_ID_RE = re.compile(r"^daily-\d{4}-\d{2}-\d{2}$")
+WEEKLY_ID_RE = re.compile(r"^weekly-\d{4}-W\d{2}$")
 
 
 def is_daily_note_id(note_id: Optional[str]) -> bool:
@@ -86,6 +87,22 @@ def is_daily_note_id(note_id: Optional[str]) -> bool:
       note per day, so the only correct number of instances is none.
     """
     return bool(DAILY_ID_RE.match(str(note_id or "")))
+
+
+def is_weekly_note_id(note_id: Optional[str]) -> bool:
+    """Whether an id belongs to a generated weekly note. See `is_daily_note_id`."""
+    return bool(WEEKLY_ID_RE.match(str(note_id or "")))
+
+
+def is_generated_note_id(note_id: Optional[str]) -> bool:
+    """Whether an id is a note this program writes rather than one you author.
+
+    Asked by everything that has to tell work apart from a record of work: a
+    generated note must never be counted as something accomplished, and must
+    never be read as a recurrence parent. One predicate so a new kind of
+    generated note cannot be added on only some of those paths.
+    """
+    return is_daily_note_id(note_id) or is_weekly_note_id(note_id)
 
 
 def stage_for_status(status: Status) -> Stage:

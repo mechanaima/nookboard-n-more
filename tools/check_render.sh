@@ -134,6 +134,7 @@ check "preview: inline code"          '<code>soil.md</code>'
 # ai panel
 check "ai panel present"              'id="ai-panel"'
 check "day recap button present"      'id="ai-day-recap"'
+check "week recap button present"     'id="ai-week-recap"'
 check "ai action buttons present"     'id="ai-summarize"'
 check "ai ask field present"          'id="ai-ask-input"'
 check "ai thinking pane present"      'id="ai-thinking"'

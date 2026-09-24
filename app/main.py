@@ -24,10 +24,11 @@ from .deps import (
 )
 from .models import (
     MOOD_LEVELS, PAIN_MAX, PAIN_MIN, STAGE_LABELS, Note, Signifier, Stage, Status,
-    coerce_pain, is_daily_note_id, reconcile, stage_for_status, stamp_completed,
+    coerce_pain, is_generated_note_id, reconcile, stage_for_status, stamp_completed,
 )
 from . import insight
 from . import mood as moodlib
+from . import weekly
 from .vault import Vault
 from .db import Database
 from .ics import notes_to_ics
@@ -135,7 +136,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         error = None
         try:
             reply = await llm.complete(ai.build_daily_summary_messages(day, done))
-            recap = ai.parse_daily_summary(reply) or None
+            recap = ai.parse_summary(reply) or None
         except LLMError as exc:
             # The list of what got done is already known and is the part that
             # matters; only the prose is allowed to go missing.
@@ -174,11 +175,112 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             db.mark_daily_generated(day.isoformat())
         return result
 
+    # -- weekly reviews ----------------------------------------------------
+
+    def _week_felt(notes: list[Note], key: str) -> str | None:
+        """How the week felt, from the mood layer's own numbers.
+
+        `today` is the week's own Sunday, not the real today: the streak inside
+        the summary is meaningless for a finished week, and pinning it to the
+        week keeps the same input from producing a different line tomorrow.
+        """
+        monday, sunday = weekly.week_bounds(key)
+        series = moodlib.daily_series(notes, start=monday, end=sunday)
+        return weekly.felt_line(moodlib.summarize(series, today=sunday))
+
+    def _insight_line(notes: list[Note]) -> str | None:
+        """The standing pain-vs-output reading, but only when there is one.
+
+        Left out rather than shown as "not enough days yet" every week forever:
+        the mood view already says that, and a weekly review that repeats a
+        non-finding each time is noise in a file.
+        """
+        reading = insight.pain_vs_output(notes)["reading"]
+        return reading["text"] if reading["strength"] != "unknown" else None
+
+    def _owed_weeks(now: datetime) -> list[str]:
+        if not cfg.weekly_summary:
+            return []
+        notes, _ = _index()
+        return weekly.due_weeks(
+            notes,
+            today=now.date(),
+            hour=cfg.daily_summary_hour,
+            now=now,
+            blocked=db.weekly_generated_weeks(),
+        )
+
+    async def _generate_weekly(key: str) -> dict:
+        """Write a week's rollup into that week's own note.
+
+        Mirrors the daily run, including both of its rules: the list is written
+        even when the model is not, and a failed recap leaves the week owed so
+        the prose can still arrive later.
+        """
+        notes, _ = _index()
+        done_by_day = weekly.finished_in(notes, key)
+        if not done_by_day:
+            return {
+                "week": key,
+                "completed": 0,
+                "wrote": False,
+                "reason": "nothing was completed that week",
+            }
+
+        felt = _week_felt(notes, key)
+        insight_line = _insight_line(notes)
+        recap = None
+        error = None
+        try:
+            reply = await llm.complete(
+                ai.build_weekly_summary_messages(key, done_by_day, felt)
+            )
+            recap = ai.parse_summary(reply) or None
+        except LLMError as exc:
+            # The list is the part that matters and it is already known.
+            error = str(exc)
+
+        section = weekly.render(key, done_by_day, recap, felt, insight_line)
+        note_id = weekly.note_id(key)
+        # Re-read rather than reusing the list from before the model call: a
+        # weekly recap is a longer generation still, and writing the pre-call
+        # body back would drop anything typed into the note meanwhile.
+        fresh, _ = _index()
+        current = next((n for n in fresh if n.id == note_id), None)
+        if current is not None:
+            vault.write(
+                replace(current, body=weekly.upsert_section(current.body, section))
+            )
+        else:
+            vault.write(
+                weekly.note_for(
+                    key, done_by_day, recap, felt, insight_reading=insight_line
+                )
+            )
+
+        result = {
+            "week": key,
+            "completed": sum(len(v) for v in done_by_day.values()),
+            "wrote": True,
+            "note_id": note_id,
+            "days": [d.isoformat() for d in sorted(done_by_day)],
+            "recap": recap,
+        }
+        if error:
+            result["recap_error"] = error
+            result["retrying"] = not db.note_weekly_attempt(key, error)
+        else:
+            db.mark_weekly_generated(key)
+        return result
+
     async def _daily_loop() -> None:
         while True:
             try:
-                for day in _owed_days(datetime.now()):
+                now = datetime.now()
+                for day in _owed_days(now):
                     await _generate_daily(day)
+                for key in _owed_weeks(now):
+                    await _generate_weekly(key)
                 app.state.daily_last_error = None
             except asyncio.CancelledError:
                 raise
@@ -457,8 +559,11 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             notes = [n for n in notes if n.collection == collection]
         if tag:
             notes = [n for n in notes if tag in n.tags]
-        hidden_daily = sum(1 for n in notes if is_daily_note_id(n.id))
-        notes = [n for n in notes if not is_daily_note_id(n.id)]
+        # Both kinds of generated container are kept off the board: a period
+        # note is a record of work, not a piece of it. The count is reported so
+        # the board never quietly looks smaller than the vault.
+        hidden_generated = sum(1 for n in notes if is_generated_note_id(n.id))
+        notes = [n for n in notes if not is_generated_note_id(n.id)]
 
         columns = []
         for stage in STAGE_ORDER:
@@ -475,7 +580,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             "columns": columns,
             "summary": board_summary(notes, by_id),
             "blocked": [_card(n, by_id) for n in stuck],
-            "hidden_daily": hidden_daily,
+            "hidden_generated": hidden_generated,
         }
 
     @app.post("/api/board/move")
@@ -742,6 +847,71 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             "retrying": db.daily_retrying_days(),
             "last_error": getattr(app.state, "daily_last_error", None),
         }
+
+    # -- weekly reviews (API) ----------------------------------------------
+
+    def _coerce_week(value) -> str:
+        try:
+            monday, _ = weekly.week_bounds(str(value or "").strip())
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"week must look like 2026-W39, got {value!r}")
+        return weekly.week_key(monday)
+
+    @app.get("/api/weekly")
+    def weekly_pending():
+        """Weeks owed a review right now, and when the next run is due."""
+        now = datetime.now()
+        return {
+            "today": now.date().isoformat(),
+            "enabled": cfg.weekly_summary,
+            "scheduled_hour": cfg.daily_summary_hour,
+            "due_now": bool(cfg.weekly_summary and now.hour >= cfg.daily_summary_hour >= 0),
+            "owed": _owed_weeks(now),
+            "summarised": sorted(db.weekly_generated_weeks()),
+            "retrying": db.weekly_retrying_weeks(),
+            "last_error": getattr(app.state, "daily_last_error", None),
+        }
+
+    @app.get("/api/weekly/{key}")
+    def weekly_state(key: str):
+        """What a week's note currently holds, and what it is owed."""
+        target = _coerce_week(key)
+        notes, _ = _index()
+        done_by_day = weekly.finished_in(notes, target)
+        monday, sunday = weekly.week_bounds(target)
+        note = next((n for n in notes if n.id == weekly.note_id(target)), None)
+        return {
+            "week": target,
+            "from": monday.isoformat(),
+            "to": sunday.isoformat(),
+            "completed": sum(len(v) for v in done_by_day.values()),
+            "days": {
+                d.isoformat(): [n.title for n in v]
+                for d, v in sorted(done_by_day.items())
+            },
+            "note_id": weekly.note_id(target),
+            "has_note": note is not None,
+            "has_summary": bool(note and weekly.has_summary(note.body)),
+            "generated": target in db.weekly_generated_weeks(),
+            "felt": _week_felt(notes, target),
+            "last_error": getattr(app.state, "daily_last_error", None),
+        }
+
+    @app.post("/api/weekly/summary")
+    async def weekly_summary(payload: dict):
+        """Summarise a week's finished work into that week's own note.
+
+        Defaults to the most recent week that has ended -- the week the
+        scheduler would write next -- so a manual run needs no argument.
+        """
+        target = (
+            _coerce_week(payload["week"])
+            if payload.get("week")
+            else weekly.week_key(datetime.now().date() - timedelta(days=7))
+        )
+        if payload.get("refresh"):
+            db.clear_weekly_generated(target)
+        return await _generate_weekly(target)
 
     # Static front-end
     static_dir = Path(__file__).resolve().parent.parent / "static"

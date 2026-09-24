@@ -235,7 +235,44 @@ def build_daily_summary_messages(day: date, done: Sequence[Note]) -> list[dict]:
     ]
 
 
-def parse_daily_summary(text: str) -> str:
+def build_weekly_summary_messages(
+    key: str, done_by_day: dict[date, list[Note]], felt: str | None
+) -> list[dict]:
+    """Ask for a recap of a week's finished work.
+
+    The same prohibition as the daily prompt, for the same reason, plus one that
+    only a longer period invites: a week is enough room for a model to invent a
+    narrative arc -- "by Friday things were back on track" -- that nothing in the
+    list supports. A week's recap is a summary, not a story about the week.
+    """
+    blocks = []
+    for day in sorted(done_by_day):
+        titles = ", ".join(n.title for n in done_by_day[day])
+        blocks.append(f"{day.strftime('%A %d')}: {titles}")
+    listing = "\n".join(blocks)
+    user = f"Week: {key}\n\nFinished:\n{listing}"
+    if felt:
+        user += f"\n\nHow the week felt: {felt}"
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You write a short first-person recap of a week's work for the "
+                "person's own journal. Three or four sentences, plain prose. No "
+                "heading, no bullets, no lists, no quotation marks. Say what got "
+                "done over the week and what it added up to. Use only the work "
+                "listed: do not invent anything, do not narrate a trajectory the "
+                "list does not show, do not estimate effort, do not add "
+                "encouragement, and do not refer to the list itself. If how the "
+                "week felt is given, you may mention it plainly, but do not read "
+                "meaning into it."
+            ),
+        },
+        {"role": "user", "content": user},
+    ]
+
+
+def parse_summary(text: str) -> str:
     """Collapse a model reply into one recap paragraph.
 
     This text lands in a Markdown file, so a stray heading or code fence would

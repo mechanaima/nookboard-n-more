@@ -13,11 +13,12 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from .models import Note, Signifier, Status, is_daily_note_id
+from . import sections
+from .models import Note, Signifier, Status, is_generated_note_id
 
 #: HTML comments so the fences never render in Obsidian or in the app.
-MARK_START = "<!-- nookboard:daily:start -->"
-MARK_END = "<!-- nookboard:daily:end -->"
+MARK_START = sections.mark("daily", "start")
+MARK_END = sections.mark("daily", "end")
 
 #: How far back a missed day is still summarised. One day is not enough: finish
 #: work on Friday, shut the laptop, open it on Monday, and Friday would be
@@ -48,8 +49,8 @@ def completed_on(notes: list[Note], day: date) -> list[Note]:
         for n in notes
         if n.status is Status.COMPLETE
         and n.completed == day
-        # A day's own note is not an accomplishment of that day.
-        and not is_daily_note_id(n.id)
+        # A day's or week's own note is not an accomplishment of that period.
+        and not is_generated_note_id(n.id)
     ]
     return sorted(done, key=lambda n: (n.title or "").lower())
 
@@ -68,7 +69,11 @@ def render(day: date, done: list[Note], recap: str | None) -> str:
         for n in done:
             meta = [part for part in (n.collection, ", ".join(n.tags)) if part]
             suffix = f" — {meta[0]}" if meta and n.collection != "inbox" else ""
-            lines.append(f"- {n.title}{suffix}")
+            # Linked, not just named: it makes the recap an index you can click
+            # through, and it gives each task a backlink to the day it was
+            # finished on. The weekly rollup does the same, so the two read
+            # alike rather than one being navigable and the other a dead list.
+            lines.append(f"- [[{n.title}]]{suffix}")
     else:
         lines.append("_Nothing was marked done._")
     lines += ["", MARK_END]
@@ -76,34 +81,14 @@ def render(day: date, done: list[Note], recap: str | None) -> str:
 
 
 def upsert_section(body: str, section: str) -> str:
-    """Put `section` into `body`, replacing any previous generated section.
+    """Put the day's section into `body`, replacing any previous one.
 
-    Appending instead of replacing would leave a second copy of the summary
-    every time the run fires, so the markers are treated as the boundary of
-    something this program owns. Everything outside them — including text added
-    after them — is preserved byte for byte.
+    Everything outside the markers — including text added after them — is
+    preserved byte for byte. The fence mechanics live in `sections`, shared with
+    the weekly summary.
     """
-    body = body or ""
-    start = body.find(MARK_START)
-    if start != -1:
-        end = body.find(MARK_END, start)
-        if end == -1:
-            # A half-deleted fence: repair it by rewriting to the end rather
-            # than appending a second, overlapping section.
-            return (body[:start].rstrip("\n") + "\n\n" + section).rstrip("\n") + "\n"
-        after = body[end + len(MARK_END):]
-        head = body[:start].rstrip("\n")
-        tail = after.strip("\n")
-        out = head
-        if out:
-            out += "\n\n"
-        out += section.rstrip("\n")
-        if tail:
-            out += "\n\n" + tail
-        return out + "\n"
-    if not body.strip():
-        return section.rstrip("\n") + "\n"
-    return body.rstrip("\n") + "\n\n" + section.rstrip("\n") + "\n"
+    return sections.upsert(body, section, start=MARK_START, end=MARK_END)
+
 
 
 def has_summary(body: str) -> bool:

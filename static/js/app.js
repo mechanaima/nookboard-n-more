@@ -2,6 +2,7 @@
 import { parseRapidInput } from "./rapid.js";
 import { monthGrid, shiftMonth } from "./calendar.js";
 import { extractWikilinks, renderWikilinks } from "./wikilink.js";
+import { weekKey } from "./week.js";
 import {
   STAGES, blockedLabel, blocksLabel, completionWarning, depCandidates,
   dropBeforeId, isOpenTask, resolveTaskRef, shiftStage, stageIndex, summaryText,
@@ -1674,7 +1675,7 @@ function aiStopTimer() {
 }
 
 function aiSetBusy(busy) {
-  ["#ai-summarize", "#ai-tags", "#ai-links", "#ai-day-recap"].forEach((sel) => {
+  ["#ai-summarize", "#ai-tags", "#ai-links", "#ai-day-recap", "#ai-week-recap"].forEach((sel) => {
     $(sel).disabled = busy;
   });
   $("#ai-stop").classList.toggle("hidden", !busy);
@@ -1715,6 +1716,50 @@ async function runDayRecap() {
       out.recap_error
         ? `wrote ${out.completed} task(s) for ${day}; no recap — the model was unavailable`
         : `recapped ${out.completed} task(s) for ${day}`,
+      out.recap_error ? "error" : ""
+    );
+  } catch (err) {
+    aiSetStatus(err.message, "error");
+  } finally {
+    aiSetBusy(false);
+  }
+}
+
+// Write the week's rollup and jump to the week's note.
+//
+// The week is derived from the open note's own date, so "recap this week" means
+// the week that note belongs to -- which is what you want when you are reading
+// Tuesday's entry and wondering how the week is going.
+async function runWeekRecap() {
+  const note = state.notes.find((n) => n.id === state.activeId);
+  if (!note) return aiSetStatus("open a note first", "error");
+  const day = (note.dates && note.dates[0]) || note.created;
+  if (!day) return aiSetStatus("that note has no date to place in a week", "error");
+  const key = weekKey(day);
+  if (!key) return aiSetStatus(`could not place ${day} in a week`, "error");
+
+  aiAbort();
+  aiReset();
+  aiSetBusy(true);
+  aiSetStatus(`writing the rollup for ${key}\u2026`, "busy");
+  try {
+    const res = await fetch("/api/weekly/summary", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ week: key, refresh: true }),
+    });
+    if (!res.ok) throw new Error(`rollup failed (${res.status})`);
+    const out = await res.json();
+    if (!out.wrote) {
+      aiSetStatus(`nothing was completed in ${key}`, "");
+      return;
+    }
+    await refresh();
+    await openEditor(out.note_id);
+    aiSetStatus(
+      out.recap_error
+        ? `wrote ${out.completed} task(s) for ${key}; no rollup — the model was unavailable`
+        : `rolled up ${out.completed} task(s) for ${key}`,
       out.recap_error ? "error" : ""
     );
   } catch (err) {
@@ -2035,6 +2080,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   // Not a stream: the recap is written to a file, so it fits none of the
   // streaming handlers above and needs its own path.
   $("#ai-day-recap").addEventListener("click", runDayRecap);
+  $("#ai-week-recap").addEventListener("click", runWeekRecap);
 
   $("#ai-links").addEventListener("click", () => {
     if (!state.activeId) return aiSetStatus("open a note first", "error");

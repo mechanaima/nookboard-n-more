@@ -318,10 +318,11 @@ what it does when nobody is watching:
   that starts at nine still produces that evening's prose. It stops after six
   attempts so a model that is never coming back is not asked all night, and
   `GET /api/daily` reports any day written without its recap under `retrying`.
-- **Daily notes are not tasks.** They are left off the board, which counts what
-  it held back in `hidden_daily`; otherwise every day would drop another date
-  page into To-do to be dismissed by hand. The same rule keeps a daily note from
-  counting itself as the day's work or being read as a recurrence parent.
+- **A period note is a record of work, not a piece of it.** Daily and weekly
+  notes are both left off the board, which counts what it held back in
+  `hidden_generated`; otherwise every day would drop another date page into
+  To-do to be dismissed by hand. The same rule keeps a period note from counting
+  itself as the period's work, or being read as a recurrence parent.
 - **No note is created for a day with nothing in it.** A page saying "nothing
   happened" is worse than the absence of a page.
 - **The recap is a fenced section, not the whole note.** The day's note is also
@@ -334,8 +335,10 @@ what it does when nobody is watching:
 - **The run is a loop, not a cron entry.** Nothing else is running to wake a
   local app at 22:00, and a laptop is shut at 22:00 far more often than it is
   open — so the loop ticks, and a day missed while the machine was off is caught
-  up on the next start. One day of catch-up only: waking to fifteen model calls
-  about afternoons nobody will read is not a feature.
+  up on the next start. A week of catch-up, at most three days per tick: one
+  day was not enough (finish work on Friday, shut the laptop, open it on Monday,
+  and Friday was gone for good), and waking to fifteen model calls about
+  afternoons nobody will read is not a feature either.
 - **Once per day, recorded in the index.** `daily_summary_state` is what stops
   every tick from spending a model call and rewriting the note all evening.
   Anything finished *after* the cutoff needs `refresh` — the run has already
@@ -345,6 +348,37 @@ what it does when nobody is watching:
   unfalsifiable.
 
 Configuration: `NOOKBOARD_DAILY_SUMMARY_HOUR` (default `22`, `-1` disables).
+
+## Weekly notes
+
+The same idea over a week — the unit you actually review in.
+
+- **Written into the week's own note**, `weekly-YYYY-Www`, dated the Sunday the
+  week ended. The ISO label is derived rather than stored, so a week cannot
+  disagree with which week it is.
+- **First owed on the Monday after the week ends.** A review of a week that has
+  not finished is a review of the wrong week. It is still owed on Wednesday if
+  the laptop was shut on Monday.
+- **A week with nothing finished in it gets no note**, for the same reason a day
+  does not.
+- **Grouped by the day each thing was finished on**, so a rollup reads as a week
+  rather than a heap, and each task is linked by title — which also gives the
+  task a backlink to the week it belongs to.
+- **"How the week felt"** is built from the mood readings that already exist,
+  and says only what it has: `Logged 2 of 7 days` is part of the sentence because
+  a week with two readings is not a week with seven.
+- **The standing pain-against-output reading appears only when there is one to
+  state** — a week is a convenient moment to notice it, not a reason to invent
+  it.
+- **Both the list and the prose obey the daily rules**: the list is written even
+  when the model is unreachable, and a week whose prose failed stays owed so it
+  can still arrive (bounded, like the day).
+- **Manual runs** via `POST /api/weekly/summary`, or the *Recap this week*
+  button, which takes the week from whichever note is open.
+
+Configuration: `NOOKBOARD_WEEKLY_SUMMARY` (default `true`) switches the weekly
+run off on its own. Both runs share one cutoff hour, `NOOKBOARD_DAILY_SUMMARY_HOUR`,
+so the two cannot drift apart.
 
 ## API
 
@@ -365,6 +399,11 @@ Configuration: `NOOKBOARD_DAILY_SUMMARY_HOUR` (default `22`, `-1` disables).
   day waiting on a recap under `retrying`, and the scheduler's last error
 - `GET    /api/daily/{day}` → what that day's note holds and what it is owed
 - `POST   /api/daily/summary` `{date?, refresh?}` → write the day's recap
+- `GET    /api/weekly` → weeks owed a review now, weeks already reviewed, any
+  owed-but-unwritten prose and the last error
+- `GET    /api/weekly/{week}` → what that week's note holds and what it is owed
+- `POST   /api/weekly/summary` `{week?, refresh?}` → write the week's rollup;
+  defaults to the most recent week that has ended
 - `GET    /api/calendar/{year}/{month}` → `{"YYYY-MM-DD": count, ...}`
 - `POST   /api/recurring/run` → instantiate due recurring notes now
 - `GET    /api/export.zip` → download the vault as a zip
@@ -498,16 +537,17 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 307 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 334 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),
-                 #              daily (stamping/sections/scheduling/recap)
-make test-js     # 97 node:test — rapid-log parsing, calendar maths, wikilinks,
-                 #              display helpers, board helpers, mood grid helpers,
-                 #              and that every local import exists
+                 #              daily (stamping/sections/scheduling/recap),
+                 #              weekly (ISO weeks/scheduling/rollup/fences)
+make test-js     # 104 node:test — rapid-log parsing, calendar maths, wikilinks,
+                 #              ISO week labels, display helpers, board helpers,
+                 #              mood grid helpers, and that every local import exists
 make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
-./tools/check_render.sh   # 72 DOM assertions in headless Chromium
+./tools/check_render.sh   # 76 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether

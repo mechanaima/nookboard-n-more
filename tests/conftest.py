@@ -36,6 +36,73 @@ class _SSEHandler(BaseHTTPRequestHandler):
 
 
 @pytest.fixture
+def seed_task(tmp_path):
+    """Write a finished task straight to disk, before the app boots.
+
+    A completion date is stamped as *today* when a task is completed through the
+    API, so summarising a past period can only be reached by seeding one. The
+    same Markdown shape the daily tests seed, which is why it lives here rather
+    than being written out again.
+    """
+
+    def _seed(nid, title, *, completed, status="complete", collection="inbox"):
+        folder = tmp_path / collection
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{nid}.md"
+        path.write_text(
+            "\n".join(
+                [
+                    "---",
+                    f"id: {nid}",
+                    f"collection: {collection}",
+                    f"title: {title}",
+                    "signifier: task",
+                    f"status: {status}",
+                    "dates: []",
+                    f"created: {completed.isoformat()}",
+                    f"completed: {completed.isoformat()}",
+                    "tags: []",
+                    "---",
+                    "",
+                ]
+            )
+        )
+        return path
+
+    return _seed
+
+
+@pytest.fixture
+def client_factory(tmp_path, sse_server):
+    """Build an app over the seeded vault, wired to the fake model.
+
+    Seed first, then build: the index is rebuilt at boot and a note written
+    afterwards would not be in it.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.config import Settings
+    from app.main import create_app
+
+    base, set_script = sse_server
+
+    def _make():
+        settings = Settings(
+            vault=tmp_path,
+            llm_url=base,
+            llm_model="fake",
+            llm_max_tokens=2048,
+            llm_timeout=30.0,
+        )
+        client = TestClient(create_app(settings=settings))
+        client.vault_root = tmp_path  # type: ignore[attr-defined]
+        client.set_script = set_script  # type: ignore[attr-defined]
+        return client
+
+    return _make
+
+
+@pytest.fixture
 def sse_server():
     """Yields (base_url, set_script) where set_script(chunks, status=200)."""
     _SSEHandler.script = []

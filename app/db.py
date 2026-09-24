@@ -16,7 +16,7 @@ from typing import Iterable
 
 import sqlite3
 
-from .models import Note, Signifier, Status, is_daily_note_id
+from .models import Note, Signifier, Status, is_generated_note_id
 from .obsidian import wikilink_targets
 
 
@@ -49,6 +49,13 @@ CREATE TABLE IF NOT EXISTS note_links (
 CREATE INDEX IF NOT EXISTS idx_links_target ON note_links(target_title);
 CREATE TABLE IF NOT EXISTS daily_summary_state (
     day          TEXT PRIMARY KEY,
+    generated_at TEXT NOT NULL,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    settled      INTEGER NOT NULL DEFAULT 1,
+    last_error   TEXT
+);
+CREATE TABLE IF NOT EXISTS weekly_summary_state (
+    key          TEXT PRIMARY KEY,
     generated_at TEXT NOT NULL,
     attempts     INTEGER NOT NULL DEFAULT 0,
     settled      INTEGER NOT NULL DEFAULT 1,
@@ -241,61 +248,105 @@ class Database:
     # rather than inferred: without it, every tick would spend a model call and
     # rewrite the note for the rest of the evening.
 
-    def mark_daily_generated(self, day: str, at: datetime | None = None) -> None:
-        """Settle a day: it has been summarised and will never be re-run."""
+    # `column` is the period key's column name, which differs because the names
+    # are the honest ones: a day is a `day`, an ISO week is a `key`. Taken as an
+    # argument so one implementation serves both rather than two that drift.
+    def _settle(
+        self, table: str, column: str, key: str, at: datetime | None = None
+    ) -> None:
+        """Settle a period: it has been summarised and will never be re-run."""
         self.conn.execute(
-            "INSERT INTO daily_summary_state (day, generated_at, settled) "
-            "VALUES (?, ?, 1) "
-            "ON CONFLICT(day) DO UPDATE SET generated_at=excluded.generated_at, "
+            f"INSERT INTO {table} ({column}, generated_at, settled) VALUES (?, ?, 1) "
+            f"ON CONFLICT({column}) DO UPDATE SET generated_at=excluded.generated_at, "
             "settled=1",
-            (day, (at or datetime.now()).isoformat(timespec="seconds")),
+            (key, (at or datetime.now()).isoformat(timespec="seconds")),
         )
         self.conn.commit()
 
-    def note_daily_attempt(
-        self, day: str, error: str, at: datetime | None = None
+    def _attempt(
+        self, table: str, column: str, key: str, error: str, at: datetime | None = None
     ) -> bool:
-        """Record a recap that failed, without settling the day.
+        """Record a recap that failed, without settling the period.
 
-        Returns whether the day is now settled -- true once the attempts run out,
-        so a model that is never coming back is stopped being asked. Until then
-        the day stays owed, and the next tick tries again: a machine whose model
-        starts at nine gets its recap instead of a permanently prose-less page.
+        Returns whether the period is now settled -- true once the attempts run
+        out, so a model that is never coming back is stopped being asked. Until
+        then it stays owed and the next tick tries again: a machine whose model
+        starts at nine gets its recap instead of a permanently prose-less note.
         """
         now = (at or datetime.now()).isoformat(timespec="seconds")
         row = self.conn.execute(
-            "SELECT attempts FROM daily_summary_state WHERE day = ?", (day,)
+            f"SELECT attempts FROM {table} WHERE {column} = ?", (key,)
         ).fetchone()
         attempts = (row["attempts"] if row else 0) + 1
         settled = attempts >= MAX_RECAP_ATTEMPTS
         self.conn.execute(
-            "INSERT INTO daily_summary_state (day, generated_at, attempts, settled, "
+            f"INSERT INTO {table} ({column}, generated_at, attempts, settled, "
             "last_error) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(day) DO UPDATE SET generated_at=excluded.generated_at, "
+            f"ON CONFLICT({column}) DO UPDATE SET generated_at=excluded.generated_at, "
             "attempts=excluded.attempts, settled=excluded.settled, "
             "last_error=excluded.last_error",
-            (day, now, attempts, int(settled), error),
+            (key, now, attempts, int(settled), error),
         )
         self.conn.commit()
         return settled
 
+    def _settled(self, table: str, column: str) -> set[str]:
+        rows = self.conn.execute(
+            f"SELECT {column} AS k FROM {table} WHERE settled = 1"
+        ).fetchall()
+        return {row["k"] for row in rows}
+
+    def _retrying(self, table: str, column: str) -> dict[str, str]:
+        rows = self.conn.execute(
+            f"SELECT {column} AS k, last_error FROM {table} WHERE settled = 0"
+        ).fetchall()
+        return {row["k"]: row["last_error"] for row in rows}
+
+    # Two tables rather than one keyed by period: the keys are dates and ISO
+    # weeks, and anything reading a shared ledger would have to tell them apart
+    # before it could parse one -- a crash waiting for the first weekly row.
+    # The semantics above are shared; only the namespace differs.
+
+    def mark_daily_generated(self, day: str, at: datetime | None = None) -> None:
+        self._settle("daily_summary_state", "day", day, at)
+
+    def note_daily_attempt(
+        self, day: str, error: str, at: datetime | None = None
+    ) -> bool:
+        return self._attempt("daily_summary_state", "day", day, error, at)
+
     def daily_generated_days(self) -> set[str]:
         """Days that will not be re-run: settled successes and given-up failures."""
-        rows = self.conn.execute(
-            "SELECT day FROM daily_summary_state WHERE settled = 1"
-        ).fetchall()
-        return {row["day"] for row in rows}
+        return self._settled("daily_summary_state", "day")
 
     def daily_retrying_days(self) -> dict[str, str]:
         """Days written with their list but still waiting on a recap."""
-        rows = self.conn.execute(
-            "SELECT day, last_error FROM daily_summary_state WHERE settled = 0"
-        ).fetchall()
-        return {row["day"]: row["last_error"] for row in rows}
+        return self._retrying("daily_summary_state", "day")
 
     def clear_daily_generated(self, day: str) -> None:
         """Forget that a day was summarised, so a forced refresh can re-run it."""
         self.conn.execute("DELETE FROM daily_summary_state WHERE day = ?", (day,))
+        self.conn.commit()
+
+    def mark_weekly_generated(self, key: str, at: datetime | None = None) -> None:
+        self._settle("weekly_summary_state", "key", key, at)
+
+    def note_weekly_attempt(
+        self, key: str, error: str, at: datetime | None = None
+    ) -> bool:
+        return self._attempt("weekly_summary_state", "key", key, error, at)
+
+    def weekly_generated_weeks(self) -> set[str]:
+        """Weeks that will not be re-run."""
+        return self._settled("weekly_summary_state", "key")
+
+    def weekly_retrying_weeks(self) -> dict[str, str]:
+        """Weeks written with their list but still waiting on a recap."""
+        return self._retrying("weekly_summary_state", "key")
+
+    def clear_weekly_generated(self, key: str) -> None:
+        """Forget that a week was summarised, so a forced refresh can re-run it."""
+        self.conn.execute("DELETE FROM weekly_summary_state WHERE key = ?", (key,))
         self.conn.commit()
 
     def run_recurring(self, today: date) -> list[Note]:
@@ -312,10 +363,10 @@ class Database:
         ).fetchall()
         for row in rows:
             real = self._row_to_note(row)
-            if is_daily_note_id(real.id):
-                # The app already writes one note per day. Instantiating a daily
-                # note as if it were a recurrence parent manufactures
-                # `daily-<day>-<next-day>` beside it, one more every day.
+            if is_generated_note_id(real.id):
+                # The app already writes these itself. Instantiating one as if
+                # it were a recurrence parent manufactures junk beside it --
+                # `daily-<day>-<next-day>` -- a new one every day.
                 continue
             last_run = date.fromisoformat(row["last_run"])
             if not real.recurrence:

@@ -7,7 +7,7 @@ from datetime import date
 
 from app.ai import (
     MAX_RECAP_CHARS,
-    parse_daily_summary,
+    parse_summary,
     parse_link_suggestions,
     parse_tag_suggestions,
     select_relevant,
@@ -182,35 +182,35 @@ def test_daily_messages_supply_the_work_as_fact():
 
 
 def test_recap_collapses_to_one_paragraph():
-    assert parse_daily_summary("A slow day.\nI shipped the zine.") == (
+    assert parse_summary("A slow day.\nI shipped the zine.") == (
         "A slow day. I shipped the zine."
     )
 
 
 def test_recap_drops_headings_and_code_fences():
-    assert parse_daily_summary("## Recap\n```\nA slow day.\n```") == "A slow day."
+    assert parse_summary("## Recap\n```\nA slow day.\n```") == "A slow day."
 
 
 def test_recap_joins_bullets_into_prose():
     """The section already lists the tasks; a second list adds nothing."""
-    assert parse_daily_summary("- Shipped the zine\n- Fixed the printer") == (
+    assert parse_summary("- Shipped the zine\n- Fixed the printer") == (
         "Shipped the zine Fixed the printer"
     )
 
 
 def test_recap_strips_wrapping_quotes():
-    assert parse_daily_summary('"A slow day."') == "A slow day."
+    assert parse_summary('"A slow day."') == "A slow day."
 
 
 def test_recap_is_capped_and_cut_at_a_sentence():
     text = ". ".join(f"Sentence number {i} with a few more words" for i in range(40))
-    out = parse_daily_summary(text)
+    out = parse_summary(text)
     assert len(out) <= MAX_RECAP_CHARS
     # Not truncated mid-word where a sentence boundary was available.
     assert out.endswith(".")
 
 
 def test_recap_of_nothing_is_empty():
-    assert parse_daily_summary("") == ""
-    assert parse_daily_summary("```") == ""
-    assert parse_daily_summary(None) == ""
+    assert parse_summary("") == ""
+    assert parse_summary("```") == ""
+    assert parse_summary(None) == ""
