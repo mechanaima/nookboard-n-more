@@ -10,7 +10,9 @@ import {
 import {
   checkpointLabel, deletedLine, restoreTitle, versionLabel, whenLabel,
 } from "./history.js";
-import { countLine, emptyHint } from "./bookmarks.js";
+import {
+  countLine, emptyHint, statusTitle, statusWord,
+} from "./bookmarks.js";
 import { weekKey } from "./week.js";
 import {
   BOARD_TILES, clockTime, greeting, longDate, statTiles, todayAction, todayLine,
@@ -116,6 +118,12 @@ const api = {
   async workspaces() { return jsonOrThrow(await fetch("/api/workspaces")); },
   // Grouped and checked on the server; the view only draws what it is handed.
   async bookmarks() { return jsonOrThrow(await fetch("/api/bookmarks")); },
+  async checkBookmarks() {
+    // A POST because it *does* something: this is the one call in the app that
+    // reaches out to the addresses in the vault. `jsonOrThrow` so a refusal arrives
+    // as a sentence rather than a token error.
+    return jsonOrThrow(await fetch("/api/bookmarks/check", { method: "POST" }));
+  },
   async workspace(id) {
     return jsonOrThrow(await fetch(`/api/workspaces/${encodeURIComponent(id)}`));
   },
@@ -2785,6 +2793,15 @@ function bookmarkCard(item) {
   title.textContent = item.title;
   card.append(title);
 
+  // The chip is filled in by `paintStatuses` once a check answers. It starts as
+  // "not checked" and is *never* drawn as up without one: a green dot from a check
+  // that has not happened is the exact lie this view must not tell.
+  const chip = document.createElement("span");
+  chip.className = "bookmark__status";
+  chip.dataset.status = "unknown";
+  chip.textContent = "not checked";
+  chip.title = "not checked yet";
+
   const second = document.createElement("span");
   if (bad) {
     second.className = "bookmark__problem";
@@ -2793,7 +2810,10 @@ function bookmarkCard(item) {
     second.className = "bookmark__host";
     second.textContent = item.host || item.url;
   }
+  // A card a browser cannot open is not asked about, so it gets no status: there is
+  // nothing to check, and "no answer" for a typo would be the same mistake twice.
   card.append(second);
+  if (!bad) card.append(chip);
 
   // A bookmark's own note is usually the reason it is in the list at all.
   if (item.body) {
@@ -2802,7 +2822,43 @@ function bookmarkCard(item) {
     why.textContent = item.body;
     card.append(why);
   }
+  // The check's answer is keyed by address, so the card carries the address it was
+  // drawn for -- not the title, which two bookmarks are allowed to share.
+  card.dataset.url = item.url;
   return card;
+}
+
+//: A check in flight, and the ticket that stops a stale answer painting over a newer
+//: list. Two answers arrive in whatever order the network feels like, and the one
+//: asked for last is the one that is true.
+let statusTicket = 0;
+
+async function paintStatuses(payload) {
+  const ticket = ++statusTicket;
+  const box = $("#bookmark-groups");
+  box.classList.add("is-checking");
+  let check;
+  try {
+    check = await api.checkBookmarks();
+  } catch (err) {
+    box.classList.remove("is-checking");
+    // A failed check is a fact about the *check*. The list above it is still true, so
+    // the count stays and the failure is added to it.
+    $("#bookmarks-line").textContent =
+      `${countLine(payload)} \u00b7 could not check: ${err.message}`;
+    return;
+  }
+  if (ticket !== statusTicket) return;
+  box.classList.remove("is-checking");
+  $("#bookmarks-line").textContent = countLine(payload, check);
+  for (const card of box.querySelectorAll("[data-url]")) {
+    const result = check.results[card.dataset.url];
+    const chip = card.querySelector(".bookmark__status");
+    if (!chip) continue;
+    chip.dataset.status = (result && result.kind) || "unknown";
+    chip.textContent = statusWord(result);
+    chip.title = statusTitle(result);
+  }
 }
 
 async function renderBookmarks() {
@@ -2833,6 +2889,10 @@ async function renderBookmarks() {
   const none = (payload.count || 0) === 0;
   empty.classList.toggle("hidden", !none);
   if (none) empty.textContent = emptyHint();
+
+  // The list is drawn *before* the check is asked for, so the page never waits on the
+  // network to show you what is in the vault. The chips fill in when the answers do.
+  if (payload.count) paintStatuses(payload);
 }
 
 //: Says what the address row does. Deliberately *not* whether the address is

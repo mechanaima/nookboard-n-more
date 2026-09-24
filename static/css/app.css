@@ -3203,6 +3203,36 @@ textarea { resize: vertical; line-height: 1.6; }
 
 /* A link the browser would not open is shown, dashed, with the reason -- a card
    that silently does nothing reads as the app being broken. */
+/* A status is a fact with a time on it, so the chip carries *words* and the colour
+   is a second reading for people who can see it, never the only one. Green only
+   ever comes from a check that answered; nothing is drawn up by default, because a
+   cheerful dot from a check that never ran is the lie this view cannot tell. */
+.bookmark__status {
+  justify-self: start; display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 3px; padding: 1px 7px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface0);
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint);
+}
+.bookmark__status::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--overlay0);
+}
+.bookmark__status[data-status="up"] {
+  color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, var(--line));
+}
+.bookmark__status[data-status="up"]::before { background: var(--green); }
+.bookmark__status[data-status="answered"] {
+  color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 45%, var(--line));
+}
+.bookmark__status[data-status="answered"]::before { background: var(--yellow); }
+.bookmark__status[data-status="down"] {
+  color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, var(--line));
+}
+.bookmark__status[data-status="down"]::before { background: var(--red); }
+/* While the checks are out: dimmed, but still saying "not checked" -- not spinning,
+   and never a placeholder green. */
+.is-checking .bookmark__status { opacity: .5; }
+
 .bookmark--bad { border-style: dashed; }
 .bookmark--bad .bookmark__title { color: var(--fg-dim); }
 .bookmark__problem { font-size: 12px; color: var(--yellow); overflow-wrap: anywhere; }

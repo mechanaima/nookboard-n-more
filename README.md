@@ -103,7 +103,7 @@ Design decisions worth knowing before you edit it:
 The UI is checked headlessly, not by eyeball alone:
 
 ```bash
-./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 173 DOM assertions
+./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 178 DOM assertions
 ./tools/shot.sh /tmp/shot.png 'http://127.0.0.1:8765/'        # screenshot
 ./tools/contrast.sh 'http://127.0.0.1:8765/#/view/board' .card__chip
 ```
@@ -187,8 +187,9 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
   notes you deleted and can still bring back (see [History](#history))
 - **Bookmarks** — put an address on a note (`url:`) and the vault keeps your
   services the way it keeps everything else: as markdown you can grep, group by
-  tag, and back up. Nothing probes your machines — a bookmark says where
-  something is, not whether it is up (see [Bookmarks](#bookmarks))
+  tag, and back up. Opening the view asks each address whether it is answering and
+  shows what it said — with the time it was asked, because a status without one is
+  a claim about the past dressed as the present (see [Bookmarks](#bookmarks))
 
 ## Home
 
@@ -703,12 +704,34 @@ card shows the title you gave it, the host it goes to, and the note's own line
 about why it is there. Clicking opens a new tab; the app itself never opens
 anything for you outside the workspace buttons.
 
-**A limit worth naming, because it is a decision and not a gap.** Nothing here
-checks whether a service is *up*. Bookmarks are a list of addresses, and turning
-that into a monitor would mean this app making requests to your machines on a
-schedule and forming an opinion about them — a second answer about state that
-would go stale between looks, and a `GET` you did not ask for. The card tells you
-where something is.
+**Status, and the price of it.** The view asks every address whether it is
+answering and shows the answer on a chip: `answering`, `answered 404`, `no answer`.
+That reverses an earlier decision here — the view used to say, deliberately, that it
+does not probe your machines, because a health check is a second answer about state
+that goes stale between looks.
+
+Reversed, with the honesty moved rather than dropped. **A status without a timestamp
+is a claim about the past dressed as the present**, so:
+
+- Every check is **taken when you look** — on opening the view, and again when you
+  press *Check again*. Nothing polls on a schedule and nothing is stored: no
+  `cron`, no history of uptime, no alerting, and the app never claims to know what
+  happened while you were away.
+- The line above the list says **when** the answers were taken (`checked just now`).
+- A card nobody has asked about says **`not checked`**, and is never drawn green.
+  Before the answers land, the chips say exactly that.
+- `answering` only ever comes from a status code that answered. A service that is
+  reachable and unhappy says `answered 503` — which is a different fact from silence,
+  and the number is the difference.
+- The reason is in words, not a code: *nothing is listening on that port*, *that name
+  does not resolve*, *no answer within 2.5 seconds*.
+- Every request is bounded and concurrent, so one dead host costs seconds rather than
+  the view, and **the list is drawn before the check is asked for** — the page never
+  waits on the network to show you what is in the vault. Nothing reads a response
+  body, so a bookmark to a large page costs the same as one to a small one.
+
+An address a browser could not open is not asked about at all — it has no host to
+reach, and "no answer" for a typo would be the same mistake twice.
 
 **An address a browser cannot open is shown, not dropped.** A missing `https://`,
 a `javascript:` url, a `file:` path — the card goes a dashed border and says why,
@@ -902,7 +925,12 @@ Bookmarks (a note with a `url:`):
 
 - `GET    /api/bookmarks` → the addresses, grouped by each note's first tag and
   ordered here rather than in the browser, plus a count and how many of them a
-  browser could not open. No network, no checks: the app does not probe anything
+  browser could not open. No network: this one only reads the vault
+- `POST   /api/bookmarks/check` → asks every usable address whether it is answering,
+  in parallel, each bounded by a 2.5s timeout, and answers with a kind
+  (`up`/`answered`/`down`/`unknown`), the status, the reason in words, how long it
+  took, and **when the check was taken**. The only endpoint here that makes requests
+  outward
 
 History (git, in the vault, off until you ask):
 
@@ -1084,7 +1112,7 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 743 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 768 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),
@@ -1107,7 +1135,7 @@ make test        # 743 pytest — model, vault, obsidian, foreign-vault, db, api
                  #              the parent a deleted note is restored from, what
                  #              a path may be, and a real repository for the rest:
                  #              moves, restores, checkpoints, unrecorded work)
-make test-js     # 176 node:test — rapid-log parsing, calendar maths, wikilinks,
+make test-js     # 178 node:test — rapid-log parsing, calendar maths, wikilinks,
                  #              ISO week labels, display helpers, board helpers,
                  #              mood grid helpers, query fences (finding them,
                  #              splicing answers, leaving other languages alone),
@@ -1120,7 +1148,7 @@ make test-js     # 176 node:test — rapid-log parsing, calendar maths, wikilink
                  #              distance for older, a restore that says what it
                  #              will write), and that every local import exists
 make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
-./tools/check_render.sh   # 173 DOM assertions in headless Chromium
+./tools/check_render.sh   # 178 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether

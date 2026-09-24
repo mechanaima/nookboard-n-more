@@ -27,6 +27,8 @@ from .models import (
     coerce_pain, is_generated_note_id, reconcile, stage_for_status, stamp_completed,
 )
 from . import bookmarks
+from . import health
+from . import health_run
 from . import history
 from . import history_run
 from . import home
@@ -1037,6 +1039,24 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         and this app does not probe your services.
         """
         return bookmarks.view([n for n in vault.list_all() if bookmarks.is_bookmark(n)])
+
+    @app.post("/api/bookmarks/check")
+    def check_bookmarks():
+        """Ask every bookmark's address whether it is answering, right now.
+
+        The only endpoint in this app that makes requests *outward*, and it is marked
+        as such because that is a real property of it: everything else reads the vault
+        or runs an allowlisted binary, and this one talks to whatever the vault's urls
+        point at. Bounded per address and run in parallel, so one dead host costs
+        seconds rather than the view -- and a failure comes back as a result, never as
+        an exception the view has to read.
+
+        The answer carries when it was taken. A status without a time is a claim about
+        the past dressed as one about the present.
+        """
+        notes = [n for n in vault.list_all() if bookmarks.is_bookmark(n)]
+        urls = [u for u in (bookmarks.url_of(n) for n in notes) if u]
+        return health_run.check_all(urls)
 
     @app.get("/api/workspaces/{note_id}")
     def get_workspace(note_id: str):

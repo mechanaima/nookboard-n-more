@@ -516,8 +516,10 @@ curl -s -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/jso
   -d "{\"id\":\"$BK_BAD\",\"collection\":\"bookmarks\",\"title\":\"A typo\",\"signifier\":\"note\",\"status\":\"open\",\"url\":\"127.0.0.1:8765\",\"tags\":[\"$BK_TAG\"]}"
 
 BK_URL="$BASE/#/view/bookmarks"
+# 9000, not 5000: this view waits on a network answer for its chips, and the dump has
+# to happen *after* the checks come back or it catches every card mid-flight.
 chromium --headless=new --disable-gpu --no-sandbox \
-  --user-data-dir="$PROFILE" --virtual-time-budget=5000 \
+  --user-data-dir="$PROFILE" --virtual-time-budget=9000 \
   --dump-dom "$BK_URL" > "$BK_DOM" 2>/dev/null
 
 check_bk() { check_file "$BK_DOM" "$1" "$2"; }
@@ -538,6 +540,18 @@ check_bk "an address that cannot be opened is shown, not dropped" 'class="bookma
 check_bk "the reason is a sentence, not a code" 'class="bookmark__problem">[^<]*https://'
 check_bk_absent "a card that cannot be opened is not made a link" 'bookmark--bad" href='
 check_bk "the address row is in the editor" "id=\"note-url\""
+# The status chips are the one thing here that waits on a network answer, so this is
+# the one place the harness has to give the page time: the fixtures point at the app
+# itself, so a check that lands says `up`, and one that never lands leaves the chips
+# reading "not checked" -- which is exactly the failure worth catching.
+check_bk "each usable card carries a status chip" 'class="bookmark__status" data-status='
+check_bk "the chip says whether it answered"       'data-status="up"[^>]*>answering<'
+# A card that cannot be opened gets no chip at all (it is never asked about), which
+# a whole-DOM grep cannot express -- `app/health.py` and its tests own that rule. What
+# the DOM can promise is the invariant: green is never seen *with* "not checked".
+check_bk_absent "nothing is drawn up while its chip still says not checked" 'data-status="up">not checked'
+check_bk "the line says when it was checked"       'checked just now|checked [0-9]'
+check_bk "the button asks for a check"             '>Check again<' 
 
 for id in "$BK_OK" "$BK_BAD"; do
   curl -s -o /dev/null -X DELETE "$BASE/api/notes/$id"
