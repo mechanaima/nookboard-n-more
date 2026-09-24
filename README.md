@@ -380,6 +380,34 @@ Configuration: `NOOKBOARD_WEEKLY_SUMMARY` (default `true`) switches the weekly
 run off on its own. Both runs share one cutoff hour, `NOOKBOARD_DAILY_SUMMARY_HOUR`,
 so the two cannot drift apart.
 
+## Templates
+
+A note that is a shape for other notes. No new file format: put a note in the
+`templates/` collection and it becomes one.
+
+- **Placeholders**: `{{date}}`, `{{time}}`, `{{week}}`, `{{title}}`. That is the
+  entire vocabulary, and there is no format mini-language — `{{date}}` is always
+  ISO, because a template that renders differently from one day to the next is a
+  template you cannot rely on.
+- **Anything else is left exactly as written.** `{{stuf}}` is a typo, and a
+  template is a document you wrote: eating it, or guessing at what it meant,
+  would quietly change what your notes say. Leaving it visible means you find
+  the mistake instead of inheriting it into a hundred notes.
+- **`{{title}}` resolves in the body, not in the title field.** A title that
+  refers to itself has nothing yet to refer to, so there it stays literal.
+- **Applying one** uses the picker above the Rapid Log, or
+  `POST /api/templates/apply`. The note lands in the collection you are looking
+  at, is dated today, and opens for editing.
+- **The template's signifier and tags carry over**, so a task template makes a
+  task. Its state does not: a template left marked done still makes open work.
+- **Applying the same template twice gets you `(2)`.** This vault resolves
+  `[[wikilinks]]` by title, so two notes sharing one title would resolve to each
+  other and the backlinks would stop meaning anything.
+- **Templates are kept off the board**, counted in `hidden_templates`, for the
+  same reason period notes are: a shape for notes is not a thing to be doing.
+- **Manual application can pick the day** (`date`), so a template can be used to
+  fill in a day that has already passed.
+
 ## API
 
 - `GET    /api/health`
@@ -399,6 +427,10 @@ so the two cannot drift apart.
   day waiting on a recap under `retrying`, and the scheduler's last error
 - `GET    /api/daily/{day}` → what that day's note holds and what it is owed
 - `POST   /api/daily/summary` `{date?, refresh?}` → write the day's recap
+- `GET    /api/templates` → the shapes a note can be made from, with the
+  placeholders each one uses
+- `POST   /api/templates/apply` `{template, title?, collection?, date?}` →
+  make a note from one
 - `GET    /api/weekly` → weeks owed a review now, weeks already reviewed, any
   owed-but-unwritten prose and the last error
 - `GET    /api/weekly/{week}` → what that week's note holds and what it is owed
@@ -537,12 +569,13 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 334 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 362 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),
                  #              daily (stamping/sections/scheduling/recap),
-                 #              weekly (ISO weeks/scheduling/rollup/fences)
+                 #              weekly (ISO weeks/scheduling/rollup/fences),
+                 #              templates (placeholders/titles/applying)
 make test-js     # 104 node:test — rapid-log parsing, calendar maths, wikilinks,
                  #              ISO week labels, display helpers, board helpers,
                  #              mood grid helpers, and that every local import exists

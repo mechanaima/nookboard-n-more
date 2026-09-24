@@ -105,6 +105,17 @@ def is_generated_note_id(note_id: Optional[str]) -> bool:
     return is_daily_note_id(note_id) or is_weekly_note_id(note_id)
 
 
+def iso_week(day: date) -> str:
+    """The ISO week label containing `day`, e.g. `2026-W39`.
+
+    Shared vocabulary rather than one feature's private helper: the weekly
+    rollup names its notes with it and templates label their output with it, and
+    two implementations of ISO 8601 week numbering is one too many.
+    """
+    iso = day.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
 def stage_for_status(status: Status) -> Stage:
     """Which column a note belongs in when nobody has placed it by hand."""
     if status in (Status.COMPLETE, Status.IRRELEVANT):

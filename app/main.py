@@ -28,6 +28,7 @@ from .models import (
 )
 from . import insight
 from . import mood as moodlib
+from . import templates
 from . import weekly
 from .vault import Vault
 from .db import Database
@@ -560,10 +561,17 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         if tag:
             notes = [n for n in notes if tag in n.tags]
         # Both kinds of generated container are kept off the board: a period
-        # note is a record of work, not a piece of it. The count is reported so
-        # the board never quietly looks smaller than the vault.
+        # note is a record of work, not a piece of it. Templates are kept off it
+        # too -- a shape for notes is not a thing to be doing, and a folder of
+        # them would otherwise drop one card per template into To-do to be
+        # dismissed by hand. Both counts are reported so the board never quietly
+        # looks smaller than the vault.
         hidden_generated = sum(1 for n in notes if is_generated_note_id(n.id))
-        notes = [n for n in notes if not is_generated_note_id(n.id)]
+        hidden_templates = sum(1 for n in notes if templates.is_template(n))
+        notes = [
+            n for n in notes
+            if not is_generated_note_id(n.id) and not templates.is_template(n)
+        ]
 
         columns = []
         for stage in STAGE_ORDER:
@@ -581,6 +589,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             "summary": board_summary(notes, by_id),
             "blocked": [_card(n, by_id) for n in stuck],
             "hidden_generated": hidden_generated,
+            "hidden_templates": hidden_templates,
         }
 
     @app.post("/api/board/move")
@@ -912,6 +921,77 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         if payload.get("refresh"):
             db.clear_weekly_generated(target)
         return await _generate_weekly(target)
+
+    # -- templates (API) ----------------------------------------------------
+
+    def _free_note_id(by_id: dict) -> str:
+        """An id for a note the app is about to create.
+
+        Minted here rather than trusted from the client: this is a note the app
+        made, and a caller that sent a duff id would have the write land on top
+        of whatever already sits at that id.
+        """
+        stamp = int(datetime.now().timestamp() * 1000)
+        candidate = f"tpl-{stamp:x}"
+        n = 2
+        while candidate in by_id:
+            candidate = f"tpl-{stamp:x}-{n}"
+            n += 1
+        return candidate
+
+    @app.get("/api/templates")
+    def list_templates():
+        """The shapes a note can be made from."""
+        notes, _ = _index()
+        return {
+            "collection": templates.TEMPLATES_COLLECTION,
+            "templates": [
+                {
+                    "id": n.id,
+                    "title": n.title,
+                    "signifier": n.signifier.value,
+                    "tags": list(n.tags),
+                    "body": n.body,
+                    "placeholders": sorted(
+                        {
+                            m.lower()
+                            for m in templates.PLACEHOLDER_RE.findall(n.body)
+                            + templates.PLACEHOLDER_RE.findall(n.title)
+                        }
+                        & set(templates.KNOWN)
+                    ),
+                }
+                for n in templates.list_templates(notes)
+            ],
+        }
+
+    @app.post("/api/templates/apply")
+    def apply_template(payload: dict):
+        """Make a note from a template, by id or by title."""
+        wanted = str(payload.get("template") or "").strip()
+        notes, by_id = _index()
+        source = by_id.get(wanted) or next(
+            (n for n in templates.list_templates(notes) if n.title.lower() == wanted.lower()),
+            None,
+        )
+        if source is None or not templates.is_template(source):
+            raise HTTPException(404, f"no template {wanted!r}")
+
+        day = _coerce_date(payload["date"], "date") if payload.get("date") else date.today()
+        note = templates.build_note(
+            source,
+            note_id=_free_note_id(by_id),
+            title=payload.get("title"),
+            collection=str(payload.get("collection") or "").strip() or "inbox",
+            day=day,
+            # Notes only: a template's title is the shape of a name, not a name
+            # already spoken for. Counting the templates would make every
+            # template reserve its own title, so the first note made from
+            # "Weekly shop" would be "Weekly shop (2)" and the second "(3)".
+            taken={n.title for n in notes if not templates.is_template(n)},
+        )
+        vault.write(note)
+        return note.to_dict()
 
     # Static front-end
     static_dir = Path(__file__).resolve().parent.parent / "static"

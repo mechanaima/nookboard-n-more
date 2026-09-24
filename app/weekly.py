@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 from . import daily, sections
-from .models import Note, Signifier, Status
+from .models import Note, Signifier, Status, iso_week
 
 #: HTML comments so the fences never render in Obsidian or in the app.
 MARK_START = sections.mark("weekly", "start")
@@ -45,8 +45,7 @@ def note_id(key: str) -> str:
 
 def week_key(day: date) -> str:
     """The ISO week label containing `day`, e.g. `2026-W39`."""
-    iso = day.isocalendar()
-    return f"{iso.year}-W{iso.week:02d}"
+    return iso_week(day)
 
 
 def week_bounds(key: str) -> tuple[date, date]:

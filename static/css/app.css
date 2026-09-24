@@ -2091,6 +2091,34 @@ textarea { resize: vertical; line-height: 1.6; }
 }
 .mood-dist-count { text-align: right; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
 
+/* 16. templates ----------------------------------------------------------- */
+
+/* A select sitting in the capture row. Sized to match the rapid input above it,
+   but *not* styled to look like one: an unlabelled select in that position is
+   read as another text field to type in, so it gets a name and a surface of its
+   own. The shared `.inline-form input` rule does not reach a select either, so
+   the sizing has to be said again here. */
+.template-label {
+  flex: none;
+  align-self: center;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+#template-pick {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  padding: 8px 11px;
+  border-radius: var(--r-md);
+  background: var(--surface0);
+}
+#template-pick.is-error {
+  border-color: var(--red);
+  color: var(--red);
+}
+
 /* 15. responsive ---------------------------------------------------------- */
 @media (max-width: 1320px) {
   /* The board needs room for five columns; shrink the editor rather than

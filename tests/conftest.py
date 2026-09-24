@@ -73,6 +73,50 @@ def seed_task(tmp_path):
 
 
 @pytest.fixture
+def seed_note(tmp_path):
+    """Write an arbitrary note file straight to disk, so boot indexes it.
+
+    `seed_task` covers the task shape; this is for the rest -- templates need a
+    body, and their titles contain `{{placeholders}}`. The title is always
+    quoted, because `title: Journal {{date}}` is not valid YAML: the brace opens
+    a flow mapping, so an unquoted placeholder silently produces a template with
+    no readable frontmatter at all.
+    """
+
+    def _seed(
+        nid,
+        *,
+        title=None,
+        body="",
+        collection="inbox",
+        signifier="note",
+        status="open",
+        dates=(),
+        tags=(),
+    ):
+        folder = tmp_path / collection
+        folder.mkdir(parents=True, exist_ok=True)
+        front = [
+            "---",
+            f"id: {nid}",
+            f"collection: {collection}",
+            f'title: "{title if title is not None else nid}"',
+            f"signifier: {signifier}",
+            f"status: {status}",
+        ]
+        front.append("dates:" if dates else "dates: []")
+        front.extend(f"- '{d}'" for d in dates)
+        front.append("tags:" if tags else "tags: []")
+        front.extend(f"- {t}" for t in tags)
+        front.append("---")
+        path = folder / f"{nid}.md"
+        path.write_text("\n".join(front) + "\n\n" + body)
+        return path
+
+    return _seed
+
+
+@pytest.fixture
 def client_factory(tmp_path, sse_server):
     """Build an app over the seeded vault, wired to the fake model.
 

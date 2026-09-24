@@ -54,6 +54,18 @@ const api = {
   async calendar(y, m)   { return (await fetch(`/api/calendar/${y}/${m}`)).json(); },
   async backlinks(id)    { return (await fetch(`/api/notes/${encodeURIComponent(id)}/backlinks`)).json(); },
 
+  // -- templates
+  async templates()      { return (await fetch("/api/templates")).json(); },
+  // jsonOrThrow, unlike the plain reads above: a refused template should say
+  // which one and why, not fail silently under a click that did nothing.
+  async applyTemplate(p) {
+    return jsonOrThrow(await fetch("/api/templates/apply", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(p),
+    }));
+  },
+
   // -- board + dependencies
   async board(params = {}) {
     const q = new URLSearchParams(params).toString();
@@ -99,6 +111,7 @@ const state = {
   activeMood: null,
   activePain: null,
   rapidFilterCollection: null, // null = show all
+  templates: [],               // shapes a note can be made from
   editorMode: "split",
   calYear: new Date().getFullYear(),
   calMonth: new Date().getMonth() + 1,
@@ -157,9 +170,12 @@ function showView(name) {
 }
 
 async function refresh() {
-  [state.notes, state.collections] = await Promise.all([
+  [state.notes, state.collections, state.templates] = await Promise.all([
     api.listNotes(),
     api.listCollections(),
+    // A picker that cannot load hides itself rather than offering a stale list
+    // you might act on, so a failure here is an empty list, not an exception.
+    api.templates().then((out) => out.templates || []).catch(() => []),
   ]);
   render();
   // The board is derived server-side (positions, blocked-ness), so it is
@@ -181,6 +197,7 @@ function syncLayoutMode() {
 function render() {
   syncLayoutMode();
   renderCollections();
+  renderTemplatePicker();
   renderRapid();
   renderTimeline();
   renderEditor();
@@ -481,6 +498,62 @@ async function createFromWikilink(title) {
   await refresh();
   const n = state.notes.find((x) => x.title === title);
   if (n) openEditor(n.id);
+}
+
+/* ------------------------------------------------------------ templates -- */
+
+// Fill the picker from the templates the server reports.
+//
+// The list is rebuilt only when the set of templates has actually changed, so a
+// refresh cannot yank the option you were reaching for out from under you.
+function renderTemplatePicker() {
+  const form = $("#template-form");
+  const sel = $("#template-pick");
+  const list = state.templates || [];
+  form.classList.toggle("hidden", list.length === 0);
+  if (!list.length) return;
+
+  const signature = list.map((t) => t.id).join("|");
+  if (sel.dataset.signature === signature) return;
+
+  const wanted = sel.value;
+  sel.innerHTML = "";
+  for (const t of list) {
+    const opt = document.createElement("option");
+    opt.value = t.id;
+    // Say which templates make tasks: the picker is the only place that shows
+    // you what you are about to get before you get it.
+    opt.textContent = t.signifier === "task" ? `${t.title} (task)` : t.title;
+    sel.appendChild(opt);
+  }
+  sel.dataset.signature = signature;
+  if (wanted && list.some((t) => t.id === wanted)) sel.value = wanted;
+}
+
+// Make a note from the chosen template, then open it.
+//
+// It lands in the collection you are looking at, or the inbox when you are
+// looking at everything: a template for a journal entry should not put the
+// entry somewhere other than the journal you have open.
+async function submitTemplate(e) {
+  e.preventDefault();
+  const sel = $("#template-pick");
+  const id = sel.value;
+  if (!id) return;
+  sel.classList.remove("is-error");
+  try {
+    const made = await api.applyTemplate({
+      template: id,
+      collection: state.rapidFilterCollection || "inbox",
+    });
+    await refresh();
+    await openEditor(made.id);
+  } catch (err) {
+    // The control that caused the failure carries the reason, rather than the
+    // click looking like it did nothing.
+    sel.classList.add("is-error");
+    sel.title = err.message;
+  }
 }
 
 /* ---------------------------------------------------------------- actions -- */
@@ -1995,6 +2068,7 @@ function readHash() {
 window.addEventListener("DOMContentLoaded", async () => {
   $$(".tab").forEach((t) => t.addEventListener("click", () => showView(t.dataset.view)));
   $("#rapid-form").addEventListener("submit", submitRapid);
+  $("#template-form").addEventListener("submit", submitTemplate);
   $("#new-collection-form").addEventListener("submit", createCollection);
   $("#note-save").addEventListener("click", saveEditor);
   $("#note-delete").addEventListener("click", deleteEditor);
