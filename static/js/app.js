@@ -319,6 +319,10 @@ function setEditorMode(mode) {
 }
 
 async function openEditor(id) {
+  // Switching notes invalidates any in-flight or displayed model output.
+  aiAbort();
+  aiReset();
+  aiSetStatus("");
   state.activeId = id;
   renderEditor();
   renderRapid();
@@ -670,6 +674,238 @@ function onSearchInput() {
   }, 200);
 }
 
+/* -------------------------------------------------------------- local ai -- */
+/* The model takes 20-70s per call. This panel exists to prove it is alive:
+   reasoning streams in from ~2s while the answer is still being written, so
+   the thinking pane is not decoration, it is the progress indicator. */
+
+const aiState = {
+  controller: null,
+  timer: null,
+  startedAt: 0,
+  reasoning: "",
+  content: "",
+  kind: null,
+};
+
+function aiSetStatus(text, cls = "") {
+  const el = $("#ai-status");
+  el.className = "ai-status " + cls;
+  el.textContent = text;
+}
+
+function aiElapsed() {
+  return Math.floor((Date.now() - aiState.startedAt) / 1000) + "s";
+}
+
+function aiStartTimer() {
+  aiState.startedAt = Date.now();
+  clearInterval(aiState.timer);
+  aiState.timer = setInterval(() => {
+    aiSetStatus(`${aiState.content ? "writing" : "thinking"} · ${aiElapsed()}`, "busy");
+  }, 1000);
+}
+
+function aiStopTimer() {
+  clearInterval(aiState.timer);
+  aiState.timer = null;
+}
+
+function aiSetBusy(busy) {
+  ["#ai-summarize", "#ai-tags", "#ai-links"].forEach((sel) => { $(sel).disabled = busy; });
+  $("#ai-stop").classList.toggle("hidden", !busy);
+  $("#ai-ask-input").disabled = busy;
+}
+
+function aiReset() {
+  aiState.reasoning = "";
+  aiState.content = "";
+  const thinking = $("#ai-thinking");
+  thinking.classList.add("hidden");
+  thinking.open = false;
+  $("#ai-thinking-text").textContent = "";
+  $("#ai-thinking-label").textContent = "thinking";
+  const out = $("#ai-output");
+  out.classList.add("hidden");
+  out.innerHTML = "";
+}
+
+function aiAbort() {
+  if (aiState.controller) aiState.controller.abort();
+}
+
+// Reasoning and, for tags/links, the raw list -- anything not the final answer.
+function aiAppendThinking(text) {
+  const box = $("#ai-thinking");
+  box.classList.remove("hidden");
+  const el = $("#ai-thinking-text");
+  el.textContent = text;
+  el.scrollTop = el.scrollHeight;
+}
+
+function aiRenderAnswer(out, final) {
+  const titles = new Set(state.notes.map((n) => n.title));
+  const pre = renderWikilinks(aiState.content, titles);
+  const html = window.marked ? window.marked.parse(pre) : escapeHtml(pre);
+  out.classList.remove("hidden");
+  out.innerHTML = html + (final ? "" : '<span class="ai-caret"></span>');
+}
+
+function aiSuggestionRow(label, items, onPick) {
+  const out = $("#ai-output");
+  out.classList.remove("hidden");
+  out.innerHTML = "";
+  if (!items.length) {
+    const p = document.createElement("p");
+    p.className = "ai-note";
+    p.textContent = "Nothing new suggested.";
+    out.appendChild(p);
+    return;
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "ai-suggestions";
+  const tag = document.createElement("span");
+  tag.className = "ai-suggest-label";
+  tag.textContent = label;
+  wrap.appendChild(tag);
+  for (const item of items) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "ai-chip";
+    b.textContent = item;
+    b.addEventListener("click", () => {
+      onPick(item);
+      b.classList.add("added");
+      b.textContent = item + " \u2713";
+    });
+    wrap.appendChild(b);
+  }
+  out.appendChild(wrap);
+}
+
+function aiHandleEvent(ev, kind) {
+  const out = $("#ai-output");
+
+  if (ev.kind === "reasoning") {
+    aiState.reasoning += ev.text;
+    aiAppendThinking(aiState.reasoning);
+    return;
+  }
+
+  if (ev.kind === "content") {
+    aiState.content += ev.text;
+    if (kind === "tags" || kind === "links") {
+      // The raw list is not worth rendering as prose; keep it as evidence.
+      $("#ai-thinking-label").textContent = "model output";
+      aiAppendThinking(aiState.reasoning + "\n\n---\n\n" + aiState.content);
+    } else {
+      aiRenderAnswer(out, false);
+    }
+    return;
+  }
+
+  if (ev.kind === "result") {
+    if (kind === "tags") {
+      aiSuggestionRow("add tag", ev.tags || [], (t) => {
+        if (state.activeTags.includes(t)) return;
+        state.activeTags.push(t);
+        renderTagChips();
+      });
+    } else if (kind === "links") {
+      aiSuggestionRow("insert link", ev.links || [], (title) => {
+        const body = $("#note-body");
+        const link = `[[${title}]]`;
+        if (body.value.includes(link)) return;
+        body.value = (body.value.trimEnd() + "\n\n" + link).trim();
+        renderPreview();
+      });
+    } else if (kind === "ask" && ev.notes) {
+      aiSuggestionRow("sources", ev.notes.map((n) => n.title), (title) => {
+        const n = state.notes.find((x) => x.title === title);
+        if (n) openEditor(n.id);
+      });
+    }
+    return;
+  }
+
+  if (ev.kind === "error") {
+    aiSetStatus("error", "error");
+    out.classList.remove("hidden");
+    out.innerHTML = `<p class="ai-note">${escapeHtml(ev.message)}</p>`;
+    return;
+  }
+
+  if (ev.kind === "done") {
+    aiRenderAnswer(out, true);
+  }
+}
+
+async function aiRun(path, payload, kind) {
+  aiAbort();
+  aiReset();
+  aiState.kind = kind;
+  aiSetBusy(true);
+  aiSetStatus("connecting\u2026", "busy");
+  aiStartTimer();
+  $("#ai-thinking").open = true;
+
+  const controller = new AbortController();
+  aiState.controller = controller;
+  const out = $("#ai-output");
+
+  try {
+    const resp = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        try {
+          aiHandleEvent(JSON.parse(line), kind);
+        } catch {
+          /* a malformed line is not worth killing the stream over */
+        }
+      }
+    }
+
+    if (!aiState.reasoning && !aiState.content) {
+      aiSetStatus("no output", "error");
+      out.classList.remove("hidden");
+      out.innerHTML =
+        '<p class="ai-note">The model returned nothing. Check llama.cpp is running, ' +
+        'and raise NOOKBOARD_LLM_MAX_TOKENS if it is spending the whole budget reasoning.</p>';
+    } else {
+      aiSetStatus(`done \u00b7 ${aiElapsed()}`, "ok");
+    }
+  } catch (err) {
+    if (err.name === "AbortError") {
+      aiSetStatus("stopped", "error");
+    } else {
+      aiSetStatus("failed", "error");
+      out.classList.remove("hidden");
+      out.innerHTML = `<p class="ai-note">${escapeHtml(err.message)}</p>`;
+    }
+  } finally {
+    aiStopTimer();
+    aiSetBusy(false);
+    aiState.controller = null;
+  }
+}
+
 /* ------------------------------------------------------------------ hash -- */
 /* Deep links:  #/view/calendar  |  #/note/<id>  |  #/view/timeline/note/<id> */
 
@@ -732,6 +968,27 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   $("#note-tags-input").addEventListener("blur", commitTagInput);
   $("#tag-input").addEventListener("click", () => $("#note-tags-input").focus());
+
+  // local ai
+  $("#ai-summarize").addEventListener("click", () => {
+    if (!state.activeId) return aiSetStatus("open a note first", "error");
+    aiRun("/api/ai/summarize", { id: state.activeId }, "summarize");
+  });
+  $("#ai-tags").addEventListener("click", () => {
+    if (!state.activeId) return aiSetStatus("open a note first", "error");
+    aiRun("/api/ai/tags", { id: state.activeId }, "tags");
+  });
+  $("#ai-links").addEventListener("click", () => {
+    if (!state.activeId) return aiSetStatus("open a note first", "error");
+    aiRun("/api/ai/links", { id: state.activeId }, "links");
+  });
+  $("#ai-ask-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const q = $("#ai-ask-input").value.trim();
+    if (!q) return;
+    aiRun("/api/ai/ask", { question: q }, "ask");
+  });
+  $("#ai-stop").addEventListener("click", aiAbort);
 
   $("#note-body").addEventListener("input", () => {
     clearTimeout(window._pvTimer);
@@ -806,6 +1063,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
 
   await refresh();
+
+  // Report which model this instance is wired to.
+  try {
+    const cfg = await (await fetch("/api/config")).json();
+    const el = $("#ai-model");
+    if (el) el.textContent = cfg.llm_model ? `(${cfg.llm_model})` : "";
+  } catch { /* the panel works without it */ }
 
   state.ready = true;
   state.activeView = boot.view;

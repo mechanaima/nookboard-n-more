@@ -79,21 +79,6 @@ so a JS exception fails the check instead of silently producing a blank pane.
 `shot.sh` uses a throwaway `--user-data-dir`, which sidesteps the profile lock
 that blocks screenshotting while a normal browser session is open.
 
-## Where data lives
-
-```
-vault/
-  inbox/
-    <id>.md
-  home/
-    <id>.md
-  work/
-    <id>.md
-```
-
-Each file is plain Markdown with YAML frontmatter. You can edit by hand,
-commit to git, etc. The server is the index, not the source of truth.
-
 ## Rapid-log syntax
 
 Type into the rapid-log box:
@@ -108,7 +93,7 @@ Type into the rapid-log box:
 Status is updated in the editor pane: `open`, `complete`, `migrated`,
 `scheduled`, `irrelevant`.
 
-## Features (v3)
+## Features
 
 - **Rapid Log** — type `• task`, `○ event`, `– note` and hit Enter
 - **Collections** — NeatNook-style curation, create + filter
@@ -124,6 +109,10 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
 - **Recurring notes** — daily/weekly/monthly cadence, instances auto-created on startup
 - **Vault export** — `GET /api/export.zip` — single zip of all `.md` files
 - **ICS subscription** — `GET /api/calendar.ics` — external calendar apps subscribe
+- **Obsidian interop** — the vault is a valid Obsidian vault; point nookboard at
+  any Markdown folder with `NOOKBOARD_VAULT` (see [Obsidian](#obsidian))
+- **Local AI** — summarize / suggest tags / suggest links / ask your notes,
+  streamed from llama.cpp (see [Local AI](#local-ai))
 
 ## API
 
@@ -140,7 +129,18 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
 - `POST   /api/recurring/run` → instantiate due recurring notes now
 - `GET    /api/export.zip` → download the vault as a zip
 - `GET    /api/calendar.ics` → RFC 5545 feed for calendar subscription
+- `GET    /api/config` → which vault and model this instance is using
 - `POST   /api/rebuild-index` (rebuild DB from .md files)
+
+Local AI (all stream NDJSON, one JSON object per line):
+
+- `POST   /api/ai/summarize` `{id}`
+- `POST   /api/ai/tags` `{id}` → final `{"kind":"result","tags":[...]}`
+- `POST   /api/ai/links` `{id}` → final `{"kind":"result","links":[...]}`
+- `POST   /api/ai/ask` `{question}` → final `{"kind":"result","notes":[...]}`
+
+Stream kinds: `reasoning`, `content`, `result`, `error`, `done`. A `truncated`
+error means the model spent its whole budget thinking.
 
 ## Where data lives
 
@@ -156,6 +156,64 @@ Markdown on disk is the source of truth. The SQLite index powers
 search and calendar aggregation. Delete `vault/.index.sqlite` and
 restart — the app rebuilds it from the `.md` files.
 
+## Obsidian
+
+Point nookboard at any Markdown folder:
+
+```bash
+NOOKBOARD_VAULT=~/Documents/School make dev
+```
+
+The vault nookboard creates is itself a valid Obsidian vault — open that folder
+in Obsidian and everything resolves. Two conventions needed reconciling:
+
+- **Links.** Obsidian resolves `[[Title]]` by filename or by an entry in
+  `aliases:`. nookboard stores files as `<id>.md` and resolves by the `title:`
+  field, so `[[Buying plants]]` used not to resolve in Obsidian at all. We now
+  emit `aliases:` on every write, so the same wikilink works in both apps.
+- **Foreign files.** Obsidian notes may have no frontmatter, arbitrary shapes
+  for `tags:` (list, space-separated, comma-separated, `#`-prefixed), inline
+  `#tags` in the body, and `[[Target|Display]]` piped links. All are parsed.
+
+Pointing nookboard at an existing vault is **non-destructive**: a note
+remembers the vault-relative path it came from, so editing never relocates the
+file or breaks incoming links. A nested folder's top directory becomes the
+note's collection. `GET /api/config` reports which vault and which model the
+running instance is using — the first thing to check when a vault looks empty.
+
+## Local AI
+
+Four features, all against a local llama.cpp server, all streamed:
+
+| | what it does |
+|---|---|
+| **Summarize** | two or three sentences plus bullets for the open note |
+| **Suggest tags** | tags drawn from the note, preferring ones already in the vault |
+| **Suggest links** | `[[links]]` to notes that already exist, click to insert |
+| **Ask my notes** | a question answered from the most relevant notes, with citations |
+
+```bash
+NOOKBOARD_LLM_URL=http://127.0.0.1:11440/v1 \
+NOOKBOARD_LLM_MODEL=bonsai-27b-q1_0 \
+make dev
+```
+
+Two things about local reasoning models that shape this design, both measured
+against the running instance rather than assumed:
+
+- **It is slow.** Roughly 26 tok/s, and because the model reasons before
+  answering, a trivial reply takes 25-75 seconds. The first *answer* token can
+  be 60s after the request. So the endpoints stream NDJSON and the UI shows the
+  reasoning stream as it arrives — there is visible progress from about 2
+  seconds, which is the difference between "working" and "broken".
+- **It can return nothing.** The whole budget can be spent inside the reasoning
+  block, giving `finish_reason: length` with empty `content` and a normal 200
+  response. That is reported as an explicit error, never as a blank success.
+  The default budget is 4096 because 2048 was not always enough.
+
+`ask` retrieval is **term-overlap scoring, not embeddings**. It is good at
+keyword-ish questions and useless at paraphrase.
+
 ## Stack
 
 - Python 3.13, FastAPI, uvicorn
@@ -168,16 +226,26 @@ restart — the app rebuilds it from the `.md` files.
 ## Tests
 
 ```bash
-make test        # 33 pytest  — model, vault, db, api, backlinks, tags, recurring, export, ics
-make test-js     # 34 node:test — rapid-log parsing, calendar maths, wikilinks, display helpers
+make test        # 104 pytest — model, vault, obsidian, foreign-vault, db, api,
+                 #              backlinks, tags, recurring, export, ics, llm, ai
+make test-js     # 36 node:test — rapid-log parsing, calendar maths, wikilinks, display helpers
 make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
-./tools/check_render.sh   # 21 DOM assertions in headless Chromium
+./tools/check_render.sh   # 28 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether
 the front end actually painted. `make check` runs all of it.
 
+`check_render.sh` seeds its own fixture notes through the API and deletes them
+afterwards, so it does not depend on what happens to be in your vault.
+
 **Date logic must be tested in more than one timezone.** `test-tz` exists
 because a `toISOString()`-based date helper passes on a machine in EDT and is
 wrong by a day everywhere else — see `localIsoDate()` in `static/js/entry.js`.
 Any new date code should use that helper, never `toISOString()`.
+
+**LLM code is tested against a real HTTP server emitting real SSE framing**,
+not a mocked transport (see `tests/conftest.py`). Mocking the transport would
+not have caught the two behaviours that actually matter: that reasoning is
+separate from content, and that a spent budget yields empty content with a
+200 response.

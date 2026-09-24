@@ -1149,6 +1149,189 @@ textarea { resize: vertical; line-height: 1.6; }
 }
 .cal-summary b { color: var(--lavender); font-weight: 600; }
 
+/* ---- local ai panel ---------------------------------------------------- */
+/* The model takes 20-70s per call, so this panel's whole job is to prove it
+   is alive: reasoning streams in from ~2s while the answer is still coming. */
+
+.ai-panel {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.ai-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.ai-model {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+.ai-status {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--subtext0);
+  margin-left: auto;
+}
+.ai-status.busy { color: var(--peach); }
+.ai-status.error { color: var(--red); }
+.ai-status.ok { color: var(--green); }
+
+.ai-stop {
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--red) 45%, transparent);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  color: var(--maroon);
+  font: 500 10.5px/1 var(--font-mono);
+  border-radius: 99px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.ai-stop:hover { color: var(--crust); background: var(--red); }
+.ai-stop.hidden { display: none; }
+
+.ai-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.btn--ghost {
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--fg-dim);
+  font-weight: 500;
+  font-size: 12.5px;
+  padding: 7px 14px;
+}
+.btn--ghost:hover { color: var(--lavender); border-color: var(--mauve); }
+.ai-actions .btn[disabled] { opacity: .45; cursor: not-allowed; transform: none; }
+
+/* the ask row reads as one control: input and button share a height, and the
+   button is ghosted to match the action buttons above it */
+.ai-ask { display: flex; gap: 6px; margin-bottom: 12px; align-items: stretch; }
+.ai-ask input { flex: 1; min-width: 0; font-size: 12.5px; }
+.ai-ask .icon-btn {
+  width: auto;
+  min-width: 44px;
+  height: auto;
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--fg-dim);
+}
+.ai-ask .icon-btn:hover {
+  color: var(--lavender);
+  border-color: var(--mauve);
+  background: color-mix(in srgb, var(--mauve) 12%, transparent);
+}
+
+.ai-thinking {
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--crust) 35%, transparent);
+}
+.ai-thinking.hidden { display: none; }
+.ai-thinking summary {
+  cursor: pointer;
+  padding: 7px 11px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.ai-thinking summary::marker { color: var(--overlay0); }
+.ai-thinking[open] summary { border-bottom: 1px solid var(--line); }
+.ai-thinking-text {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--fg-faint);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-output {
+  padding: 14px 16px;
+  background: color-mix(in srgb, var(--crust) 42%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  font-size: 13.5px;
+  line-height: 1.65;
+  min-height: 44px;
+}
+.ai-output.hidden { display: none; }
+.ai-output > :first-child { margin-top: 0; }
+.ai-output > :last-child { margin-bottom: 0; }
+/* the streaming answer can reuse the markdown preview styling */
+.ai-output h1, .ai-output h2, .ai-output h3 { color: var(--lavender); }
+.ai-output code {
+  font-family: var(--font-mono);
+  font-size: .88em;
+  background: color-mix(in srgb, var(--surface0) 75%, transparent);
+  color: var(--peach);
+  padding: 1.5px 5px;
+  border-radius: 4px;
+}
+.ai-output ul, .ai-output ol { padding-left: 22px; }
+.ai-output li { margin: .22em 0; }
+.ai-output li::marker { color: var(--mauve); }
+.ai-output .ai-caret {
+  display: inline-block;
+  width: 7px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--mauve);
+  animation: caret 1s steps(2) infinite;
+}
+@keyframes caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+
+.ai-suggestions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ai-suggest-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  margin-right: 2px;
+}
+.ai-chip {
+  appearance: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--lavender);
+  background: color-mix(in srgb, var(--lavender) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lavender) 34%, transparent);
+  border-radius: 99px;
+  padding: 4px 11px;
+  cursor: pointer;
+  transition: transform .15s var(--ease-pop), background .16s, color .16s, border-color .16s;
+}
+.ai-chip:hover {
+  background: var(--lavender);
+  color: var(--crust);
+  border-color: var(--lavender);
+  transform: translateY(-1px);
+}
+.ai-chip:active { transform: scale(.95); }
+.ai-chip.added {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, transparent);
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  cursor: default;
+}
+.ai-chip.added:hover { transform: none; background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
+
+.ai-note {
+  font-size: 12px;
+  color: var(--fg-faint);
+  margin-top: 8px;
+}
+
 /* 11. empty state --------------------------------------------------------- */
 .empty-state {
   max-width: 420px;

@@ -208,6 +208,33 @@
           <span id="save-flash" class="save-flash" aria-live="polite"></span>
         </div>
 
+        <section id="ai-panel" class="ai-panel">
+          <div class="ai-head">
+            <span class="field-label">local ai</span>
+            <span class="ai-model" id="ai-model"></span>
+            <span id="ai-status" class="ai-status" aria-live="polite"></span>
+            <button id="ai-stop" class="ai-stop hidden" type="button">stop</button>
+          </div>
+
+          <div class="ai-actions">
+            <button id="ai-summarize" class="btn btn--ghost" type="button">Summarize</button>
+            <button id="ai-tags" class="btn btn--ghost" type="button">Suggest tags</button>
+            <button id="ai-links" class="btn btn--ghost" type="button">Suggest links</button>
+          </div>
+
+          <form id="ai-ask-form" class="ai-ask">
+            <input id="ai-ask-input" placeholder="Ask my notes…" aria-label="ask your notes">
+            <button type="submit" class="icon-btn" title="ask">↵</button>
+          </form>
+
+          <details id="ai-thinking" class="ai-thinking hidden">
+            <summary><span id="ai-thinking-label">thinking</span></summary>
+            <div id="ai-thinking-text" class="ai-thinking-text"></div>
+          </details>
+
+          <div id="ai-output" class="ai-output hidden"></div>
+        </section>
+
         <aside id="backlinks-panel" class="backlinks hidden">
           <h3>Linked from</h3>
           <ul id="backlinks-list" class="entry-list"></ul>

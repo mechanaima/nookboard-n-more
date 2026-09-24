@@ -58,7 +58,9 @@ def load_settings() -> Settings:
         llm_url=os.environ.get("NOOKBOARD_LLM_URL", "http://127.0.0.1:11440/v1").strip(),
         llm_model=os.environ.get("NOOKBOARD_LLM_MODEL", "bonsai-27b-q1_0").strip(),
         # Generous by default: the local model spends most of its budget in the
-        # reasoning block and returns EMPTY content if it runs out of tokens.
-        llm_max_tokens=_env_int("NOOKBOARD_LLM_MAX_TOKENS", 2048),
+        # reasoning block and returns EMPTY content with finish_reason=length if
+        # it runs out. Measured against Bonsai-27B: summarise and tags need
+        # roughly 1400 tokens, links has exceeded 2048 and needed more.
+        llm_max_tokens=_env_int("NOOKBOARD_LLM_MAX_TOKENS", 4096),
         llm_timeout=_env_float("NOOKBOARD_LLM_TIMEOUT", 300.0),
     )
