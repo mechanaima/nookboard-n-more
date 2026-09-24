@@ -185,3 +185,7 @@ def test_config_endpoint_reports_the_vault(client):
     body = client.get("/api/config").json()
     assert body["note_count"] >= 2
     assert body["llm_model"] == "fake"
+    # Exposed so you can tell from outside whether a running server actually
+    # picked up a settings change -- which is exactly the confusion that
+    # prompted adding it.
+    assert body["llm_max_tokens"] == 2048

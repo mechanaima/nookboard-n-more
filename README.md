@@ -202,14 +202,18 @@ Two things about local reasoning models that shape this design, both measured
 against the running instance rather than assumed:
 
 - **It is slow.** Roughly 26 tok/s, and because the model reasons before
-  answering, a trivial reply takes 25-75 seconds. The first *answer* token can
-  be 60s after the request. So the endpoints stream NDJSON and the UI shows the
-  reasoning stream as it arrives — there is visible progress from about 2
-  seconds, which is the difference between "working" and "broken".
+  answering, a trivial reply takes **25–95 seconds** (measured; the spread is
+  wide and the same call can take 64s or 96s on consecutive runs). The first
+  *answer* token can land 60s after the request. So the endpoints stream NDJSON
+  and the UI shows the reasoning stream as it arrives — there is visible
+  progress from about 2 seconds, which is the difference between "working" and
+  "broken". Verified it really streams: 1552 chunks spread over 59 seconds.
 - **It can return nothing.** The whole budget can be spent inside the reasoning
   block, giving `finish_reason: length` with empty `content` and a normal 200
   response. That is reported as an explicit error, never as a blank success.
-  The default budget is 4096 because 2048 was not always enough.
+  The default budget is 4096: at 2048 the links prompt truncated, and at 4096
+  it has succeeded on every run since (`GET /api/config` reports the budget a
+  running server actually loaded).
 
 `ask` retrieval is **term-overlap scoring, not embeddings**. It is good at
 keyword-ish questions and useless at paraphrase.

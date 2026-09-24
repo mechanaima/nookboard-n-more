@@ -61,12 +61,16 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
 
     @app.get("/api/config")
     def get_config():
-        """What this instance is pointed at. Handy when a vault looks empty."""
+        """What this instance is pointed at. Handy when a vault looks empty,
+        and the only way to tell from outside whether a running server picked
+        up a settings change."""
         return {
             "vault": str(root),
             "note_count": len(vault.list_all()),
             "llm_url": cfg.llm_url,
             "llm_model": cfg.llm_model,
+            "llm_max_tokens": cfg.llm_max_tokens,
+            "llm_timeout": cfg.llm_timeout,
         }
 
     @app.get("/api/collections")
