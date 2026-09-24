@@ -12,6 +12,7 @@
                                              19. times
                                              20. workspaces
                                              21. history (the vault's past)
+                                             22. bookmarks (where things are)
                                              15. responsive (last, on purpose)
    The glass: one --wall on body, and every panel samples it through the glass
    tokens in section 1. Read the notes there before moving the wall.
@@ -3153,3 +3154,55 @@ textarea { resize: vertical; line-height: 1.6; }
     grid-column: 1 / -1;
   }
 }
+
+/* 22. bookmarks ------------------------------------------------------------ */
+/* Where things are, not what they are doing. A card is the link and the host it
+   goes to underneath, because "the one on :8137" is usually how you recognise it.
+   Nothing here checks whether a service is up: this app does not probe your
+   machines, and a bookmark is a note, not a monitor. */
+
+.bookmarks-view { min-height: 0; overflow-y: auto; }
+.bookmarks-view.hidden { display: none; }
+
+.bookmark-groups { display: grid; gap: 20px; align-content: start; }
+
+.bookmark-group { display: grid; gap: 8px; }
+
+.bookmark-group__title {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.bookmark-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  gap: 10px;
+}
+
+.bookmark {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface1);
+  color: inherit;
+  text-decoration: none;
+}
+
+.bookmark:hover { border-color: color-mix(in srgb, var(--pink) 45%, var(--line)); }
+.bookmark:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+.bookmark__title { font-size: 13.5px; font-weight: 600; color: var(--fg); }
+.bookmark__host { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-faint); overflow-wrap: anywhere; }
+.bookmark__why { font-size: 12px; color: var(--fg-dim); overflow-wrap: anywhere; }
+
+/* A link the browser would not open is shown, dashed, with the reason -- a card
+   that silently does nothing reads as the app being broken. */
+.bookmark--bad { border-style: dashed; }
+.bookmark--bad .bookmark__title { color: var(--fg-dim); }
+.bookmark__problem { font-size: 12px; color: var(--yellow); overflow-wrap: anywhere; }

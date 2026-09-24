@@ -28,6 +28,7 @@
       <button data-view="mood"        class="tab"        role="tab">Mood</button>
       <button data-view="transcribe"  class="tab"        role="tab">Transcribe</button>
       <button data-view="workspaces"  class="tab"        role="tab">Workspaces</button>
+      <button data-view="bookmarks"   class="tab"        role="tab">Bookmarks</button>
       <button data-view="history"     class="tab"        role="tab">History</button>
       <button data-view="collections" class="tab"        role="tab">Collections</button>
       <button data-view="timeline"    class="tab"        role="tab">Timeline</button>
@@ -340,6 +341,27 @@
       </div>
     </section>
 
+    <section id="bookmarks-view" class="bookmarks-view hidden">
+      <div class="home-inner">
+
+        <header class="home-hero">
+          <svg class="home-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path fill-rule="evenodd" d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm0 2.4a6.6 6.6 0 1 1 0 13.2 6.6 6.6 0 0 1 0-13.2z"/>
+            <path d="M3.2 12h17.6"/>
+          </svg>
+          <h1 class="home-title">Bookmarks</h1>
+          <p class="home-sub" id="bookmarks-line" aria-live="polite">reading the addresses…</p>
+          <div class="home-actions">
+            <button id="bookmarks-refresh" class="btn btn--ghost" type="button"
+                    title="read the vault again">Read again</button>
+          </div>
+        </header>
+
+        <div id="bookmark-groups" class="bookmark-groups"></div>
+        <p id="bookmarks-empty" class="empty-state hidden"></p>
+      </div>
+    </section>
+
     <section id="board-view" class="board-view hidden">
       <div class="board-bar">
         <div class="board-filters">
@@ -519,6 +541,19 @@
             </div>
             <!-- what the folder is right now: filled by renderWorkspacePanel() -->
             <p id="note-path-hint" class="field-hint"></p>
+          </div>
+          <div class="field field--wide">
+            <span class="field-label">address</span>
+            <div class="path-row">
+              <input id="note-url" class="path-row__field" type="text"
+                     placeholder="http://127.0.0.1:8137"
+                     spellcheck="false" autocomplete="off"
+                     aria-label="an address this note bookmarks"
+                     title="an address this note bookmarks — a service, a page, a machine">
+              <button id="note-url-clear" class="time-row__clear" type="button"
+                      aria-label="remove the address" title="remove the address">✕</button>
+            </div>
+            <p id="note-url-hint" class="field-hint"></p>
           </div>
           <div class="field field--wide" id="workspace-panel-field" hidden>
             <span class="field-label">workspace</span>

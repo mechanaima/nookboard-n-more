@@ -131,18 +131,3 @@ def view(notes: list[Note]) -> dict:
         "unusable": len(unusable),
         "other": OTHER,
     }
-
-
-def summary_line(payload: dict) -> str:
-    """The one line above the list. Words, so the count and its noise read as one fact."""
-    count = payload["count"] - payload["unusable"]
-    if not count and not payload["unusable"]:
-        return "nothing bookmarked yet"
-    parts = [f"{count} bookmark" + ("" if count == 1 else "s")]
-    if payload["unusable"]:
-        parts.append(
-            f"{payload['unusable']} that cannot be opened"
-            if payload["unusable"] != 1
-            else "1 that cannot be opened"
-        )
-    return " \u00b7 ".join(parts)

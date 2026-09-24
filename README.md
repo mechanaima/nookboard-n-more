@@ -103,7 +103,7 @@ Design decisions worth knowing before you edit it:
 The UI is checked headlessly, not by eyeball alone:
 
 ```bash
-./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 162 DOM assertions
+./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 173 DOM assertions
 ./tools/shot.sh /tmp/shot.png 'http://127.0.0.1:8765/'        # screenshot
 ./tools/contrast.sh 'http://127.0.0.1:8765/#/view/board' .card__chip
 ```
@@ -185,6 +185,10 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
 - **History** — the whole vault under git, in the vault, off until you ask for
   it: versions for every note, a button to write an old one back, and a list of
   notes you deleted and can still bring back (see [History](#history))
+- **Bookmarks** — put an address on a note (`url:`) and the vault keeps your
+  services the way it keeps everything else: as markdown you can grep, group by
+  tag, and back up. Nothing probes your machines — a bookmark says where
+  something is, not whether it is up (see [Bookmarks](#bookmarks))
 
 ## Home
 
@@ -199,6 +203,7 @@ The view the app opens on. Seven cards over the same vault every other view read
 | Today | whether today has a note yet, and what has been finished |
 | Board | ready / open / blocked / done |
 | Workspaces | which folders want attention, and what they say |
+| Bookmarks | how many addresses the vault keeps, and how many cannot be opened |
 
 **Why the clock is the browser's job.** Every other card is a fact about the
 vault, and the server knows those. The time is not one: a clock rendered
@@ -685,6 +690,33 @@ It is a **user** timer, not a system service: no root, and it reads the same vau
 the app does. Re-run the installer after moving the checkout — it rewrites the
 paths rather than making you hand-edit unit files.
 
+## Bookmarks
+
+A note with a `url:` is a bookmark. That is the whole rule — no marker tag, no
+separate store, no database table: the same markdown files as everything else, so
+they can be grepped, edited by hand, and carried in the vault's own history.
+
+The Bookmarks view groups them by **each note's first tag** (`services`, `tools`,
+`school` — whatever you use) and puts the untagged ones under **Other**, last,
+because Other is the absence of a decision rather than one that sorts early. Each
+card shows the title you gave it, the host it goes to, and the note's own line
+about why it is there. Clicking opens a new tab; the app itself never opens
+anything for you outside the workspace buttons.
+
+**A limit worth naming, because it is a decision and not a gap.** Nothing here
+checks whether a service is *up*. Bookmarks are a list of addresses, and turning
+that into a monitor would mean this app making requests to your machines on a
+schedule and forming an opinion about them — a second answer about state that
+would go stale between looks, and a `GET` you did not ask for. The card tells you
+where something is.
+
+**An address a browser cannot open is shown, not dropped.** A missing `https://`,
+a `javascript:` url, a `file:` path — the card goes a dashed border and says why,
+in a sentence. It is *not* refused when you save it: a note is your file, and
+losing what you wrote about a service because you mistyped its address would be
+the worse failure. Saving a url the app dislikes is allowed; the view is where
+you find out.
+
 ## Workspaces
 
 A note with a `path:` is a workspace: the note is the *thing you write about*,
@@ -866,6 +898,12 @@ Workspaces (a note with a `path:`):
   own `X-Nookboard-Action` header, `400` for anything not in the list, `409` when
   the folder is not there
 
+Bookmarks (a note with a `url:`):
+
+- `GET    /api/bookmarks` → the addresses, grouped by each note's first tag and
+  ordered here rather than in the browser, plus a count and how many of them a
+  browser could not open. No network, no checks: the app does not probe anything
+
 History (git, in the vault, off until you ask):
 
 - `GET    /api/history` → `on`, the recent changes, the notes that are gone, the
@@ -1046,7 +1084,7 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 712 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 743 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),
@@ -1069,7 +1107,7 @@ make test        # 712 pytest — model, vault, obsidian, foreign-vault, db, api
                  #              the parent a deleted note is restored from, what
                  #              a path may be, and a real repository for the rest:
                  #              moves, restores, checkpoints, unrecorded work)
-make test-js     # 171 node:test — rapid-log parsing, calendar maths, wikilinks,
+make test-js     # 176 node:test — rapid-log parsing, calendar maths, wikilinks,
                  #              ISO week labels, display helpers, board helpers,
                  #              mood grid helpers, query fences (finding them,
                  #              splicing answers, leaving other languages alone),
@@ -1082,7 +1120,7 @@ make test-js     # 171 node:test — rapid-log parsing, calendar maths, wikilink
                  #              distance for older, a restore that says what it
                  #              will write), and that every local import exists
 make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
-./tools/check_render.sh   # 162 DOM assertions in headless Chromium
+./tools/check_render.sh   # 173 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether

@@ -35,6 +35,7 @@ TRANSCRIBE_DOM="$(mktemp /tmp/nookboard-transcribe-XXXXXX.html)"
 WS_DOM="$(mktemp /tmp/nookboard-ws-XXXXXX.html)"
 WS_NOTE_DOM="$(mktemp /tmp/nookboard-ws-note-XXXXXX.html)"
 HIST_DOM="$(mktemp /tmp/nookboard-history-XXXXXX.html)"
+BK_DOM="$(mktemp /tmp/nookboard-bookmarks-XXXXXX.html)"
 HIST_JSON="$(mktemp /tmp/nookboard-history-XXXXXX.json)"
 # A repo made for this check, because the assertions need a state that exists
 # on no machine in particular: a real marker in a real comment, and one
@@ -500,6 +501,47 @@ else
     check_hist "and says what"              'class="history-row__what"'
   fi
 fi
+
+# --- render 9: the bookmarks view -------------------------------------------
+# Two fixtures through the API: one address that opens and one that cannot. The
+# second matters as much as the first -- an address a browser would refuse has to be
+# *shown* with its reason, because a card that silently does nothing reads as the app
+# being broken. Both are deleted again at the end of the section.
+BK_TAG="render-check-bookmarks"
+BK_OK="render-check-bk-ok"
+BK_BAD="render-check-bk-bad"
+curl -s -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/json' \
+  -d "{\"id\":\"$BK_OK\",\"collection\":\"bookmarks\",\"title\":\"The vault itself\",\"signifier\":\"note\",\"status\":\"open\",\"url\":\"http://127.0.0.1:8765\",\"tags\":[\"$BK_TAG\"]}"
+curl -s -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/json' \
+  -d "{\"id\":\"$BK_BAD\",\"collection\":\"bookmarks\",\"title\":\"A typo\",\"signifier\":\"note\",\"status\":\"open\",\"url\":\"127.0.0.1:8765\",\"tags\":[\"$BK_TAG\"]}"
+
+BK_URL="$BASE/#/view/bookmarks"
+chromium --headless=new --disable-gpu --no-sandbox \
+  --user-data-dir="$PROFILE" --virtual-time-budget=5000 \
+  --dump-dom "$BK_URL" > "$BK_DOM" 2>/dev/null
+
+check_bk() { check_file "$BK_DOM" "$1" "$2"; }
+check_bk_absent() { check_absent "$BK_DOM" "$1" "$2"; }
+
+echo "rendering $BK_URL  ($(wc -c < "$BK_DOM") bytes of DOM)"
+
+check_bk "bookmarks tab marked active" 'data-view="bookmarks"[^>]*class="tab active"|class="tab active"[^>]*data-view="bookmarks"'
+check_bk "view shown, not hidden"      'id="bookmarks-view" class="bookmarks-view"'
+check_bk "layout in wide mode"         'class="layout is-wide'
+# The hero line is a placeholder until the fetch answers, so a line that is no longer
+# that placeholder is the fetch landing and the render completing.
+check_bk_absent "the hero line is not left as the placeholder" 'reading the addresses'
+check_bk "a group is named by its tag"  "class=\"bookmark-group__title\">$BK_TAG<"
+check_bk "a bookmark links to its address" 'class="bookmark" href="http://127.0.0.1:8765"'
+check_bk "and says which host it goes to"  'class="bookmark__host">127.0.0.1:8765<'
+check_bk "an address that cannot be opened is shown, not dropped" 'class="bookmark bookmark--bad"'
+check_bk "the reason is a sentence, not a code" 'class="bookmark__problem">[^<]*https://'
+check_bk_absent "a card that cannot be opened is not made a link" 'bookmark--bad" href='
+check_bk "the address row is in the editor" "id=\"note-url\""
+
+for id in "$BK_OK" "$BK_BAD"; do
+  curl -s -o /dev/null -X DELETE "$BASE/api/notes/$id"
+done
 
 echo
 echo "pass=$pass fail=$fail"

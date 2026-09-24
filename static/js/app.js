@@ -10,6 +10,7 @@ import {
 import {
   checkpointLabel, deletedLine, restoreTitle, versionLabel, whenLabel,
 } from "./history.js";
+import { countLine, emptyHint } from "./bookmarks.js";
 import { weekKey } from "./week.js";
 import {
   BOARD_TILES, clockTime, greeting, longDate, statTiles, todayAction, todayLine,
@@ -113,6 +114,8 @@ const api = {
     }));
   },
   async workspaces() { return jsonOrThrow(await fetch("/api/workspaces")); },
+  // Grouped and checked on the server; the view only draws what it is handed.
+  async bookmarks() { return jsonOrThrow(await fetch("/api/bookmarks")); },
   async workspace(id) {
     return jsonOrThrow(await fetch(`/api/workspaces/${encodeURIComponent(id)}`));
   },
@@ -281,7 +284,7 @@ const SIDEBAR_VIEWS = ["rapid", "collections", "timeline", "calendar"];
 //: Views that need the full width and therefore trade away the sidebar: the
 //: board (five columns) and mood (a year of weeks). They keep the editor as a
 //: second column so a note can be read or fixed without leaving the view.
-const WIDE_VIEWS = ["home", "board", "mood", "transcribe", "workspaces", "history"];
+const WIDE_VIEWS = ["home", "board", "mood", "transcribe", "workspaces", "bookmarks", "history"];
 
 function showView(name) {
   state.activeView = name;
@@ -300,6 +303,7 @@ function showView(name) {
   if (name === "mood") renderMood();
   if (name === "transcribe") renderTranscribe();
   if (name === "workspaces") renderWorkspaces();
+  if (name === "bookmarks") renderBookmarks();
   if (name === "history") renderHistory();
   // Leaving the view with the microphone open would keep the light on, and there
   // is no visible control left to stop it.
@@ -328,6 +332,7 @@ async function refresh() {
   // A workspace is read from the folder itself, so any change to a note can
   // change what it says -- and the folder may have moved on since it was read.
   if (state.activeView === "workspaces") await renderWorkspaces();
+  if (state.activeView === "bookmarks") await renderBookmarks();
   // The vault's past is a fact about the files, and the files just changed.
   if (state.activeView === "history") await renderHistory();
 }
@@ -547,6 +552,8 @@ function renderEditor() {
   $("#note-until").value = n.until || "";
   renderTimeHint();
   $("#note-path").value = n.path || "";
+  $("#note-url").value = n.url || "";
+  renderUrlHint();
   renderWorkspacePanel();
   renderHistoryPanel();
   state.activeTags = (n.tags || []).slice();
@@ -813,6 +820,9 @@ async function saveEditor() {
       // A folder, or nothing. The server refuses anything that is not a string
       // and reads the folder itself -- the editor never claims it is valid.
       path: $("#note-path").value.trim() || null,
+      // An address, or nothing. Not validated here: whether a browser can open it
+      // is the server's answer, and the view has room for the reason.
+      url: $("#note-url").value.trim() || null,
       tags,
       mood: state.activeMood || null,
       // Explicit null when unset, so clearing a reading actually clears it
@@ -2751,6 +2761,95 @@ async function renderWorkspaces() {
   }
 }
 
+// ---- bookmarks -------------------------------------------------------------
+//
+// Where things are. The server sends the groups, in order, with every address
+// already checked; this builds anchors and nothing else. An address a browser
+// cannot open is shown as a card with the reason rather than as a link -- a link
+// that silently does nothing reads as the app being broken.
+
+function bookmarkCard(item) {
+  const bad = Boolean(item.problem);
+  const card = document.createElement(bad ? "div" : "a");
+  card.className = bad ? "bookmark bookmark--bad" : "bookmark";
+  if (!bad) {
+    card.href = item.url;
+    card.target = "_blank";
+    // noreferrer as well as noopener: the address is the person's own, and the page
+    // it opens has no business knowing where it was opened from.
+    card.rel = "noopener noreferrer";
+  }
+
+  const title = document.createElement("span");
+  title.className = "bookmark__title";
+  title.textContent = item.title;
+  card.append(title);
+
+  const second = document.createElement("span");
+  if (bad) {
+    second.className = "bookmark__problem";
+    second.textContent = item.problem;
+  } else {
+    second.className = "bookmark__host";
+    second.textContent = item.host || item.url;
+  }
+  card.append(second);
+
+  // A bookmark's own note is usually the reason it is in the list at all.
+  if (item.body) {
+    const why = document.createElement("span");
+    why.className = "bookmark__why";
+    why.textContent = item.body;
+    card.append(why);
+  }
+  return card;
+}
+
+async function renderBookmarks() {
+  const box = $("#bookmark-groups");
+  const empty = $("#bookmarks-empty");
+  let payload;
+  try {
+    payload = await api.bookmarks();
+  } catch (err) {
+    $("#bookmarks-line").textContent = `could not read the addresses: ${err.message}`;
+    box.replaceChildren();
+    empty.classList.add("hidden");
+    return;
+  }
+  $("#bookmarks-line").textContent = countLine(payload);
+  box.replaceChildren(...(payload.groups || []).map((group) => {
+    const section = document.createElement("section");
+    section.className = "bookmark-group";
+    const heading = document.createElement("h2");
+    heading.className = "bookmark-group__title";
+    heading.textContent = group.name;
+    const cards = document.createElement("div");
+    cards.className = "bookmark-cards";
+    cards.append(...group.items.map(bookmarkCard));
+    section.append(heading, cards);
+    return section;
+  }));
+  const none = (payload.count || 0) === 0;
+  empty.classList.toggle("hidden", !none);
+  if (none) empty.textContent = emptyHint();
+}
+
+//: Says what the address row does. Deliberately *not* whether the address is
+//: openable: that is the server's answer, and the place with room for the reason.
+function renderUrlHint() {
+  const hint = $("#note-url-hint");
+  if (!hint) return;
+  const typed = $("#note-url").value.trim();
+  const note = state.notes.find((n) => n.id === state.activeId);
+  const saved = (note && note.url) || "";
+  hint.textContent = typed
+    ? "saved as a bookmark — it will show up under Bookmarks"
+    : saved
+      ? "saved as empty — save to stop counting this as a bookmark"
+      : "an address here makes this note a bookmark";
+}
+
 // ---- history ---------------------------------------------------------------
 //
 // The vault's past, and one note's versions. Everything in this block reads; the
@@ -3300,11 +3399,17 @@ window.addEventListener("DOMContentLoaded", async () => {
   // The path hint says what the app will do with what is typed, and the panel
   // below it shows what the folder *is* -- one read, at the moment you look.
   $("#note-path").addEventListener("input", renderWorkspacePanel);
+  $("#note-url").addEventListener("input", renderUrlHint);
+  $("#note-url-clear").addEventListener("click", () => {
+    $("#note-url").value = "";
+    renderUrlHint();
+  });
   $("#note-path-clear").addEventListener("click", () => {
     $("#note-path").value = "";
     renderWorkspacePanel();
   });
   $("#workspaces-refresh").addEventListener("click", () => renderWorkspaces());
+  $("#bookmarks-refresh").addEventListener("click", () => renderBookmarks());
 
   $("#history-start").addEventListener("click", async () => {
     // Asked for, and never automatic: this writes a `.git` into someone's vault.

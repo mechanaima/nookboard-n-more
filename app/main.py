@@ -26,6 +26,7 @@ from .models import (
     MOOD_LEVELS, PAIN_MAX, PAIN_MIN, STAGE_LABELS, Note, Signifier, Stage, Status,
     coerce_pain, is_generated_note_id, reconcile, stage_for_status, stamp_completed,
 )
+from . import bookmarks
 from . import history
 from . import history_run
 from . import home
@@ -61,6 +62,8 @@ class NoteIn(BaseModel):
     until: Optional[str] = None
     #: A folder this note is about. A note that has one is a workspace.
     path: Optional[str] = None
+    #: An address this note is about. A note that has one is a bookmark.
+    url: Optional[str] = None
     parent_id: Optional[str] = None
     mood: Optional[str] = None
     pain: Optional[int] = None
@@ -434,6 +437,22 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         text = value.strip()
         return text or None
 
+    def _coerce_url(value: object) -> Optional[str]:
+        """The address a note points at, or a refusal.
+
+        Stored as typed and *not* validated here, which is the one place this differs
+        from a path: whether a browser can open an address is `app.bookmarks`' answer,
+        and it is a thing to be told rather than a thing to be stopped for. A url that
+        is a typo is still the person's note about that service, and refusing the save
+        would throw the note away to protect a link.
+        """
+        if value is None or value == "":
+            return None
+        if not isinstance(value, str):
+            raise HTTPException(400, "url must be a string (an address, or null)")
+        text = value.strip()
+        return text or None
+
 
     def _coerce_enum(enum_cls, value, field):
         try:
@@ -488,6 +507,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             at=_coerce_time(payload.at, "at"),
             until=_coerce_time(payload.until, "until"),
             path=_coerce_path(payload.path),
+            url=_coerce_url(payload.url),
             parent_id=payload.parent_id,
             mood=payload.mood,
             pain=coerce_pain(payload.pain),
@@ -534,6 +554,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             collection=payload.get("collection", existing.collection),
             title=payload.get("title", existing.title),
             body=payload.get("body", existing.body),
+            url=_coerce_url(payload.get("url", existing.url)),
             signifier=_coerce_enum(
                 Signifier, payload.get("signifier", existing.signifier.value), "signifier"
             ),
@@ -1002,6 +1023,20 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             "workspaces": states,
             "tools": workspace_run.tools(),
         }
+
+    # A note with `url:` is a bookmark: an address you wanted to keep, sitting in the
+    # vault you already back up and can grep. "Services and the like" is a list, and a
+    # browser's bookmarks bar is the one place a list cannot be read from a file.
+
+    @app.get("/api/bookmarks")
+    def list_bookmarks():
+        """Every note that points at an address, grouped the way its tags say.
+
+        No I/O beyond the index, deliberately: unlike a workspace there is nothing on
+        the other end to ask. A bookmark says where something is, not whether it is up,
+        and this app does not probe your services.
+        """
+        return bookmarks.view([n for n in vault.list_all() if bookmarks.is_bookmark(n)])
 
     @app.get("/api/workspaces/{note_id}")
     def get_workspace(note_id: str):
