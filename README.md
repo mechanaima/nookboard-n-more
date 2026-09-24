@@ -44,15 +44,37 @@ Deep links (shareable, and they survive reload):
 
 ## Design
 
-Dark-first, built on **Catppuccin Mocha** with a restrained vaporwave accent
-(a pink → mauve → cyan gradient used sparingly: wordmark, primary button,
-active-tab underline).
+Dark-first, built on **Catppuccin Mocha** with a restrained vaporwave accent.
+The pink → mauve → cyan gradient survives only as text or a rule — the wordmark,
+the active-tab underline, the dashboard title — because the primary action is
+glass now (see below).
+
+The app reads as **glass over a lit wall**: one `--wall` on `body`, and every
+panel, column, card and button samples it through the glass tokens in section 1.
+
+Three things about that are not obvious, and are worth not breaking:
+
+- **A blur over a smooth gradient is invisible** — it renders the identical
+  smooth gradient. The wall's fine lattice (24px pitch) is what the blur has to
+  destroy: crisp outside a panel, hazed *inside* it. That contrast between
+  smeared and sharp is the whole frosted read. Without the lattice the panels
+  look like flat dark cutouts, which is exactly how the first attempt at this
+  turned out.
+- **Panels sit about eight luminance steps above the wall**, and it is
+  arithmetic rather than taste: on a dark theme a panel *below* the wall reads
+  as a hole rather than a raised surface. The glass tokens are built from
+  `--surface1` for that reason. Move the wall and you have to re-measure them.
+- **One recipe per thing.** Tags are `.tag-chip, .card__chip` — one rule, two
+  callers. The primary action is one glass button, shared by the board, the
+  editor and the sidebar. The pressed filter chip reuses it. Anything written
+  twice drifts; two buttons that meant the same thing already had.
 
 The whole visual layer is one hand-written stylesheet —
-`static/css/app.css`, ~13 numbered sections (tokens → reset → typography →
-topbar → sidebar → entries → editor → controls → markdown → calendar →
-motion → responsive). There is **no framework, no build step, and no CDN**;
-`marked` is vendored into `static/vendor/`.
+`static/css/app.css`, 17 numbered sections (tokens → reset → typography →
+topbar → sidebar → entries → editor → controls → markdown → calendar → empty
+state → motion → board → mood → responsive → templates → dashboard). There is
+**no framework, no build step, and no CDN**; `marked` is vendored into
+`static/vendor/`.
 
 Design decisions worth knowing before you edit it:
 
@@ -80,8 +102,9 @@ Design decisions worth knowing before you edit it:
 The UI is checked headlessly, not by eyeball alone:
 
 ```bash
-./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 53 DOM assertions
+./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 101 DOM assertions
 ./tools/shot.sh /tmp/shot.png 'http://127.0.0.1:8765/'        # screenshot
+./tools/contrast.sh 'http://127.0.0.1:8765/#/view/board' .card__chip
 ```
 
 `check_render.sh` loads the page in headless Chromium, dumps the post-JS DOM
