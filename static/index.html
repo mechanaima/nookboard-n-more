@@ -645,10 +645,14 @@
         </div>
 
         <div class="editor-tabs" role="tablist" aria-label="editor mode">
-          <button class="editor-tab active" data-mode="split"   role="tab">Split</button>
-          <button class="editor-tab"        data-mode="write"   role="tab">Write</button>
-          <button class="editor-tab"        data-mode="preview" role="tab">Preview</button>
+          <button class="editor-tab active" data-mode="split" role="tab">Split</button>
+          <button class="editor-tab"        data-mode="write" role="tab">Write</button>
           <span class="tab-ink" aria-hidden="true"></span>
+          <!-- Preview is not a third mode. Reading a finished note is a different act
+               from editing one, and it wants the whole window rather than half of it:
+               this opens the note rendered, in a modal, with focus inside it. -->
+          <button id="preview-open" class="editor-tab editor-tab--action" type="button"
+                  aria-haspopup="dialog" title="read this note rendered">Preview</button>
         </div>
 
         <div class="editor-body" data-mode="split">
@@ -708,6 +712,36 @@
       </article>
     </section>
   </main>
+
+  <!-- The preview, as a modal rather than a tab: reading a finished note is a
+       different act from editing one, and it wants the whole window instead of half.
+       Outside the editor on purpose -- a modal inside a pane that is `display: none`
+       could never be opened. Focus is trapped while it is open, Escape closes it, and
+       focus goes back to the button that opened it. -->
+  <div id="preview-modal" class="modal" hidden>
+    <div class="modal__backdrop" data-modal-close="backdrop" aria-hidden="true"></div>
+    <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="preview-modal-title">
+      <header class="modal__head">
+        <span class="pane-tag">rendered</span>
+        <h2 id="preview-modal-title" class="modal__title"></h2>
+        <button id="preview-modal-close" class="btn btn--ghost btn--small" type="button"
+                aria-label="close the preview">Close</button>
+      </header>
+      <!-- One scroller for the whole reading: properties, then the note, then what
+           links here. Three separate scrollers inside one dialog would be three
+           places to lose your place. -->
+      <div class="modal__scroll">
+        <dl id="preview-modal-props" class="props"></dl>
+        <!-- tabindex, so the rendered note itself can hold focus while it is read -->
+        <div id="preview-modal-body" class="md-preview modal__body" tabindex="0"></div>
+        <section class="modal__links">
+          <h3 class="modal__links-title">Linked from</h3>
+          <ul id="preview-modal-backlinks" class="entry-list"></ul>
+          <p id="preview-modal-links-empty" class="preview-empty hidden"></p>
+        </section>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/vendor/marked.min.js"></script>
   <script type="module" src="/static/js/app.js"></script>

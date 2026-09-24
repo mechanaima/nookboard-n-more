@@ -1,5 +1,6 @@
 // static/js/app.js — orchestrates the four views.
 import { parseRapidInput } from "./rapid.js";
+import { paintProperties } from "./reading.js";
 import { monthGrid, shiftMonth } from "./calendar.js";
 import { extractWikilinks, renderWikilinks } from "./wikilink.js";
 import { timeHint } from "./schedule.js";
@@ -567,6 +568,9 @@ function renderEditor() {
 
   $("#note-title").value = n.title;
   $("#note-body").value = n.body;
+  // Which note the box is holding, so a rendered copy can tell the live text from
+  // whatever happened to be in there before this note was painted.
+  $("#note-body").dataset.noteId = n.id;
   $("#note-signifier").value = n.signifier;
   $("#note-status").value = n.status;
   $("#note-stage").value = n.stage || "todo";
@@ -640,20 +644,21 @@ function unansweredQueries(md, on) {
   return [...seen].filter((text) => !queryResults.has(queryKey(text, on)));
 }
 
-async function renderPreview() {
-  if (!state.activeId) return;
+//: Paint a note rendered, into any target.
+//:
+//: Two surfaces show a rendered note -- the split pane and the preview modal -- and
+//: this is the only code that makes one, so they cannot disagree about what a note
+//: says. `md` is what to render; the caller decides where the text comes from.
+async function paintPreview(target, note, md) {
   // Captured because the answer being fetched belongs to *this* note: if another
   // one is opened before it lands, rendering it there would attribute the work
   // to the wrong day.
   const resolvesFor = state.activeId;
-  const md = $("#note-body").value || "";
-  const target = $("#note-preview");
   if (!md.trim()) {
     target.innerHTML = '<p class="preview-empty">Nothing to preview yet — start writing on the left.</p>';
     return;
   }
 
-  const note = state.notes.find((n) => n.id === state.activeId);
   const on = noteDate(note);
   const pending = unansweredQueries(md, on);
 
@@ -681,7 +686,111 @@ async function renderPreview() {
     })
   );
 
-  if (state.activeId === resolvesFor) renderPreview();
+  if (state.activeId === resolvesFor) await renderPreview();
+}
+
+//: The editor's own text for this note. The editor is the only surface with unsaved
+//: work, so it wins -- but only while it is really showing this note. Opened from a
+//: deep link the box may not have been painted yet, and the note's saved text is the
+//: honest answer then.
+function editorTextFor(note) {
+  const body = $("#note-body");
+  return body.dataset.noteId === note.id ? body.value || "" : note.body || "";
+}
+
+async function renderPreview() {
+  if (!state.activeId) return;
+  const note = state.notes.find((n) => n.id === state.activeId);
+  if (!note) return;
+  await paintPreview($("#note-preview"), note, $("#note-body").value || "");
+  // A dialog left open while the note changes would be showing one note's body under
+  // another note's name, which is worse than showing nothing.
+  if (previewOpen()) {
+    $("#preview-modal-title").textContent = note.title || "untitled";
+    paintProperties($("#preview-modal-props"), note);
+    await paintPreview($("#preview-modal-body"), note, editorTextFor(note));
+    await paintReadingLinks(note);
+  }
+}
+
+/* -------------------------------------------------------- the preview modal -- */
+/* Reading a finished note is a different act from editing one, so the preview is a
+   dialog rather than a third editor tab: it takes the window, it holds focus while
+   it is open, Escape closes it, and focus goes back to what opened it. */
+
+//: What had focus before the dialog opened. A modal that drops you back at the top of
+//: the page when it closes is a modal you lose your place in.
+let previewReturnFocus = null;
+
+//: "Linked from", in the dialog. The empty case is said out loud rather than left
+//: blank: a reading view with no links section cannot be told apart from one whose
+//: links failed to load, and this app does not let those two look the same.
+async function paintReadingLinks(note) {
+  const list = $("#preview-modal-backlinks");
+  const saying = $("#preview-modal-links-empty");
+  const hits = await paintBacklinksInto(list, note.id);
+  if (hits === null) {
+    saying.textContent = "The links to this note could not be read.";
+  } else if (!hits.length) {
+    saying.textContent = "Nothing links here yet.";
+  } else {
+    saying.textContent = "";
+  }
+  saying.classList.toggle("hidden", !saying.textContent);
+}
+
+function previewOpen() {
+  return !$("#preview-modal").hidden;
+}
+
+function openPreview() {
+  const note = state.notes.find((n) => n.id === state.activeId);
+  if (!note) return; // nothing open to preview
+  const opener = document.activeElement;
+  previewReturnFocus = opener instanceof HTMLElement && opener !== document.body ? opener : null;
+  $("#preview-modal").hidden = false;
+  $("#preview-modal-title").textContent = note.title || "untitled";
+  $("#preview-modal-close").focus();
+  syncHash();
+  renderPreview();
+}
+
+function closePreview() {
+  if (!previewOpen()) return;
+  $("#preview-modal").hidden = true;
+  syncHash();
+  const back = previewReturnFocus;
+  previewReturnFocus = null;
+  // Only if it is still in the document: the control that opened the dialog can be
+  // re-rendered away while it is open, and focusing a detached node does nothing.
+  if (back && document.contains(back)) back.focus();
+}
+
+//: Escape closes the dialog and Tab stays inside it. On the capture phase on purpose:
+//: the app's own Escape handler closes the note, and a dialog that closed the note
+//: behind it would be losing work rather than dismissing a view.
+function previewKeys(e) {
+  if (!previewOpen()) return;
+  if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();
+    closePreview();
+    return;
+  }
+  if (e.key !== "Tab") return;
+  const inside = [...$("#preview-modal").querySelectorAll(
+    "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])"
+  )].filter((el) => !el.disabled && el.getClientRects().length > 0);
+  if (!inside.length) return;
+  const first = inside[0];
+  const last = inside[inside.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
 }
 
 function setEditorMode(mode) {
@@ -710,29 +819,36 @@ async function openEditor(id) {
   moveInk();
 }
 
+//: Who links here, painted into a list. Two surfaces show backlinks -- the editor's
+//: aside and the reading dialog -- and this is the only code that knows how one is
+//: drawn, so they cannot disagree about who links to a note.
+//:
+//: Returns the hits, or `null` if the question could not be asked. A failed fetch and
+//: an empty answer are different facts and the callers say so differently: the aside
+//: hides, and the dialog says it could not read them.
+async function paintBacklinksInto(list, noteId) {
+  let hits;
+  try {
+    hits = await api.backlinks(noteId);
+  } catch {
+    list.replaceChildren();
+    return null;
+  }
+  list.replaceChildren();
+  hits.forEach((h, i) => {
+    list.appendChild(buildEntry(h, { animate: true, index: i, showDate: true }));
+  });
+  return hits;
+}
+
 async function renderBacklinks() {
   const panel = $("#backlinks-panel");
-  const list = $("#backlinks-list");
   if (!state.activeId) {
     panel.classList.add("hidden");
     return;
   }
-  let hits = [];
-  try {
-    hits = await api.backlinks(state.activeId);
-  } catch {
-    panel.classList.add("hidden");
-    return;
-  }
-  list.innerHTML = "";
-  if (!hits.length) {
-    panel.classList.add("hidden");
-    return;
-  }
-  panel.classList.remove("hidden");
-  hits.forEach((h, i) => {
-    list.appendChild(buildEntry(h, { animate: true, index: i, showDate: true }));
-  });
+  const hits = await paintBacklinksInto($("#backlinks-list"), state.activeId);
+  panel.classList.toggle("hidden", !hits || !hits.length);
 }
 
 async function createFromWikilink(title) {
@@ -885,6 +1001,8 @@ async function deleteEditor() {
 }
 
 function closeEditor() {
+  // The dialog reads a note the editor is holding, so it cannot outlive it.
+  closePreview();
   if (!state.activeId) return;
   state.activeId = null;
   clearDeps();
@@ -2323,14 +2441,16 @@ async function aiRun(path, payload, kind) {
 }
 
 /* ------------------------------------------------------------------ hash -- */
-/* Deep links:  #/view/calendar  |  #/note/<id>  |  #/view/timeline/note/<id> */
+/* Deep links:  #/view/calendar  |  #/note/<id>  |  #/view/timeline/note/<id>
+   and #/view/bookmarks/note/<id>/preview/<id> for a note opened in the dialog. */
 
 function parseHash() {
   const toks = (location.hash || "").replace(/^#\/?/, "").split("/").filter(Boolean);
-  const out = { view: null, note: null };
+  const out = { view: null, note: null, preview: null };
   for (let i = 0; i + 1 < toks.length; i += 2) {
     if (toks[i] === "view") out.view = decodeURIComponent(toks[i + 1]);
     if (toks[i] === "note") out.note = decodeURIComponent(toks[i + 1]);
+    if (toks[i] === "preview") out.preview = decodeURIComponent(toks[i + 1]);
   }
   return out;
 }
@@ -2340,6 +2460,9 @@ function syncHash() {
   const toks = [];
   if (state.activeView && state.activeView !== "rapid") toks.push("view", state.activeView);
   if (state.activeId) toks.push("note", state.activeId);
+  // Whether the preview dialog is open is part of where you are, so a reload lands
+  // back in the reading rather than in the editor behind it.
+  if (previewOpen() && state.activeId) toks.push("preview", state.activeId);
   const next = toks.length ? "#/" + toks.join("/") : "#/";
   if (location.hash !== next) history.replaceState(null, "", next);
 }
@@ -2355,10 +2478,13 @@ function validViews() {
 }
 
 function readHash() {
-  const { view, note } = parseHash();
+  const { view, note, preview } = parseHash();
   return {
     view: validViews().includes(view) ? view : "home",
-    note: note || null,
+    // `#/preview/<id>` is the short form of "that note, in the dialog", so the note
+    // may arrive under either token.
+    note: note || preview || null,
+    preview: preview || null,
   };
 }
 
@@ -3410,6 +3536,18 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#note-save").addEventListener("click", saveEditor);
   $("#note-delete").addEventListener("click", deleteEditor);
   $("#note-close").addEventListener("click", closeEditor);
+
+  // The dialog: the button that opens it, the buttons that close it, and the trap
+  // that keeps Tab inside while it is open.
+  $("#preview-open").addEventListener("click", () => {
+    if (previewOpen()) closePreview();
+    else openPreview();
+  });
+  $("#preview-modal-close").addEventListener("click", closePreview);
+  $("#preview-modal").addEventListener("click", (e) => {
+    if (e.target.matches("[data-modal-close='backdrop']")) closePreview();
+  });
+  document.addEventListener("keydown", previewKeys, true);
   $("#new-note-btn").addEventListener("click", createBlankNote);
 
   // -- board
@@ -3533,7 +3671,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
     renderMood();
   }));
-  $$(".editor-tab").forEach((t) => t.addEventListener("click", () => setEditorMode(t.dataset.mode)));
+  // Only the tabs set a mode. The Preview button wears the same class because it
+  // belongs in that row, and clicking it must not be read as "switch to preview
+  // mode" -- there is no such mode any more.
+  $$(".editor-tab[data-mode]").forEach((t) =>
+    t.addEventListener("click", () => setEditorMode(t.dataset.mode)));
 
   $("#note-tags-input").addEventListener("keydown", (e) => {
     const field = e.target;
@@ -3658,7 +3800,15 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (searchBox.value.trim()) $("#search-results").classList.remove("hidden");
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "/" && document.activeElement !== searchBox) {
+    // Computed before anything acts on the key, and asked of what has focus rather
+    // than of where the pointer is: a bare "/" belongs to whoever is typing, and
+    // stealing it out of the note body made the character untypeable.
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+    // The reading dialog owns the keyboard while it is open. Letting a shortcut reach
+    // past it would move focus out of a modal that is holding it, which is the one
+    // thing a modal must not allow.
+    if (previewOpen()) return;
+    if (e.key === "/" && !typing && document.activeElement !== searchBox) {
       e.preventDefault();
       searchBox.focus();
       return;
@@ -3672,7 +3822,6 @@ window.addEventListener("DOMContentLoaded", async () => {
       }
       return;
     }
-    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
     if (e.key === "n" && !typing && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
       createBlankNote();
@@ -3707,6 +3856,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     state.activeId = next.note && state.notes.some((n) => n.id === next.note) ? next.note : null;
     showView(state.activeView);
     if (state.activeId !== before) await renderBacklinks();
+    // The dialog follows the hash in both directions: a link into it opens it, and a
+    // link past it (or a Back) closes it.
+    if (next.preview && next.preview === state.activeId) openPreview();
+    else if (previewOpen()) closePreview();
   });
 
   await refresh();
@@ -3723,6 +3876,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   state.activeId = boot.note && state.notes.some((n) => n.id === boot.note) ? boot.note : null;
   showView(state.activeView);
   if (state.activeId) await renderBacklinks();
+  // A deep link that names the preview opens the dialog over the note it names.
+  if (boot.preview && boot.preview === state.activeId) openPreview();
   // A deep link lands on a note the same way opening it does, so it must load
   // the dependency panel too — otherwise a reloaded page silently loses it.
   if (state.activeId) await renderDeps(state.activeId);

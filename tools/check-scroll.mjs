@@ -142,6 +142,32 @@ window.__nookReachable = (view) => {
     reachable: bottom <= viewport + 2 || canScroll || pageScrolls,
   });
 };
+// The reading dialog is a surface too, and it scrolls itself while it is open. A
+// dialog whose text runs past the window with nothing to scroll is the same bug in a
+// new place, so it is measured the same way -- one scroller holds the properties, the
+// note and what links here.
+window.__nookPreviewOpens = (id) => {
+  location.hash = '#/preview/' + id;
+  return true;
+};
+window.__nookPreviewReachable = () => {
+  const modal = document.getElementById('preview-modal');
+  if (!modal || modal.hidden) return JSON.stringify({ view: 'preview', error: 'the dialog did not open' });
+  const el = modal.querySelector('.modal__scroll');
+  if (!el) return JSON.stringify({ view: 'preview', error: 'no scroller in the dialog' });
+  const viewport = window.innerHeight;
+  const bottom = el.getBoundingClientRect().bottom;
+  const canScroll = el.scrollHeight > el.clientHeight + 2;
+  return JSON.stringify({
+    view: 'preview',
+    scroller: (el.className || el.id).toString().slice(0, 30),
+    contentBottom: Math.round(bottom),
+    viewport,
+    slack: Math.round(el.scrollHeight - el.clientHeight),
+    overflows: bottom > viewport + 2,
+    reachable: bottom <= viewport + 2 || canScroll,
+  });
+};
 true;`;
 
 if (SEED) {
@@ -151,11 +177,13 @@ if (SEED) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        id,
-        collection: "inbox",
-        title: `Scroll check ${id.slice(-3)}`,
-        signifier: "note",
-        status: "open",
+      id,
+      collection: "inbox",
+      title: `Scroll check ${id.slice(-3)}`,
+      signifier: "note",
+      status: "open",
+      // A body, so the views that show note text have something to be tall with.
+      body: Array.from({ length: 12 }, (_, n) => `Paragraph ${n + 1} of the seeded note.`).join("\n\n"),
       }),
     });
   }
@@ -197,6 +225,26 @@ for (const view of tabs) {
       `scroller=${settled.scroller.padEnd(16)} bottom=${settled.contentBottom} ` +
       `viewport=${settled.viewport}${settled.slack ? ` slack=${settled.slack}` : ""}`,
   );
+}
+
+// The dialog, over a seeded note with a body long enough to overflow.
+if (SEED) {
+  await cdp.evaluate(`window.__nookPreviewOpens(${JSON.stringify(SEED_IDS[0])})`);
+  await sleep(SETTLE_MS);
+  const settled = JSON.parse(await cdp.evaluate("window.__nookPreviewReachable()"));
+  if (settled.error) {
+    console.log(`  ??      ${settled.view}: ${settled.error}`);
+    broken++;
+  } else {
+    if (settled.overflows || settled.slack > 0) tall++;
+    if (!settled.reachable) broken++;
+    rows.push(settled);
+    console.log(
+      `  ${settled.reachable ? "ok  " : "FAIL"}    ${settled.view.padEnd(12)} ` +
+        `scroller=${settled.scroller.padEnd(16)} bottom=${settled.contentBottom} ` +
+        `viewport=${settled.viewport}${settled.slack ? ` slack=${settled.slack}` : ""}`,
+    );
+  }
 }
 
 if (SEED) {

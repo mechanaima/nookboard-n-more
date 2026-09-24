@@ -36,6 +36,7 @@ WS_DOM="$(mktemp /tmp/nookboard-ws-XXXXXX.html)"
 WS_NOTE_DOM="$(mktemp /tmp/nookboard-ws-note-XXXXXX.html)"
 HIST_DOM="$(mktemp /tmp/nookboard-history-XXXXXX.html)"
 BK_DOM="$(mktemp /tmp/nookboard-bookmarks-XXXXXX.html)"
+PV_DOM="$(mktemp /tmp/nookboard-preview-XXXXXX.html)"
 HIST_JSON="$(mktemp /tmp/nookboard-history-XXXXXX.json)"
 # A repo made for this check, because the assertions need a state that exists
 # on no machine in particular: a real marker in a real comment, and one
@@ -54,7 +55,7 @@ cleanup() {
     curl -s -o /dev/null -X DELETE "$BASE/api/notes/$id" || true
   done
   rm -rf "$PROFILE" "$DOM" "$BOARD_DOM" "$MOOD_DOM" "$HOME_DOM" "$TRANSCRIBE_DOM" \
-    "$WS_DOM" "$WS_NOTE_DOM" "$WS_DIR" "$HIST_DOM" "$HIST_JSON"
+    "WS_DOM" "$WS_NOTE_DOM" "$WS_DIR" "$HIST_DOM" "$HIST_JSON" "$PV_DOM"
 }
 trap cleanup EXIT
 
@@ -557,6 +558,50 @@ check_bk "the line says when it was checked"       'checked just now|checked [0-
 check_bk "the button asks for a check"             '>Check again<' 
 
 for id in "$BK_OK" "$BK_BAD"; do
+  curl -s -o /dev/null -X DELETE "$BASE/api/notes/$id"
+done
+
+# --- render 10: the reading dialog -------------------------------------------
+# The dialog is reachable by URL -- `#/note/<id>/preview/<id>`, or the short
+# `#/preview/<id>` -- which is the only way a headless dump can see it: there is no
+# click in `--dump-dom`. So this section doubles as the check that a link into a
+# reading actually opens one.
+PV_ID="render-check-preview"
+PV_LINK="render-check-preview-links"
+PV_BODY='## A heading\n\nSome **bold** text.\n\n- one\n- two'
+curl -s -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/json' \
+  -d "{\"id\":\"$PV_ID\",\"collection\":\"inbox\",\"title\":\"A note worth reading\",\"signifier\":\"note\",\"status\":\"open\",\"tags\":[\"$BK_TAG\"],\"mood\":\"good\",\"pain\":4,\"icon\":\"brain\",\"url\":\"http://127.0.0.1:8765\",\"body\":\"$PV_BODY\"}"
+curl -s -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/json' \
+  -d "{\"id\":\"$PV_LINK\",\"collection\":\"inbox\",\"title\":\"Points at the reader\",\"signifier\":\"note\",\"status\":\"open\",\"tags\":[\"$BK_TAG\"],\"body\":\"See [[A note worth reading]].\"}"
+
+PV_URL="$BASE/#/preview/$PV_ID"
+chromium --headless=new --disable-gpu --no-sandbox \
+  --user-data-dir="$PROFILE" --virtual-time-budget=7000 \
+  --dump-dom "$PV_URL" > "$PV_DOM" 2>/dev/null
+
+check_pv() { check_file "$PV_DOM" "$1" "$2"; }
+check_pv_absent() { check_absent "$PV_DOM" "$1" "$2"; }
+check_pv_absent "it is not hidden while it is open" 'id="preview-modal" class="modal" hidden'
+echo "rendering $PV_URL  ($(wc -c < "$PV_DOM") bytes of DOM)"
+
+check_pv "the dialog is a dialog"              'id="preview-modal" class="modal"'
+check_pv "said in the markup, not merely styled" 'role="dialog"'
+check_pv "and declared modal"                  'aria-modal="true"'
+check_pv "named by its title element"          'aria-labelledby="preview-modal-title"'
+check_pv "the note's title is in the header"   'id="preview-modal-title"[^>]*>A note worth reading<'
+check_pv "the frontmatter renders as properties" 'id="preview-modal-props" class="props"'
+check_pv "a property the app knows"            '<dt>mood</dt><dd>good</dd>'
+check_pv "another one"                         '<dt>pain</dt><dd>4</dd>'
+check_pv "the body is rendered, not escaped"   '<h2[^>]*>A heading</h2>'
+check_pv "markdown emphasis became markup"     '<strong>bold</strong>'
+check_pv "a list became a list"                '<li>one</li>'
+check_pv "what links here has a section"       'id="preview-modal-backlinks"'
+check_pv "and names the note that links here"  'Points at the reader'
+check_pv "the opener says it opens a dialog"   'aria-haspopup="dialog"'
+# The tab it replaced must be gone: a preview reachable two ways would drift.
+check_pv_absent "there is no preview editor mode left" 'data-mode="preview"'
+
+for id in "$PV_ID" "$PV_LINK"; do
   curl -s -o /dev/null -X DELETE "$BASE/api/notes/$id"
 done
 
