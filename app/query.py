@@ -66,6 +66,7 @@ class Query:
     period: Optional[str] = None
     collection: Optional[str] = None   # narrow to one collection by name
     tag: Optional[str] = None          # narrow to the notes carrying one tag
+    status: Optional[str] = None       # "done" | "not done"
     source: str = ""
 
 
@@ -83,6 +84,16 @@ def _split_scope(rest: str) -> tuple[str, Optional[str]]:
     return rest.strip(), None
 
 
+#: `done` / `not done` at the end of a phrase, wherever it is written.
+DONE_RE = re.compile(r"(?i)(?:^|\s)(not\s+done|done)\s*$")
+
+
+def _trailing_filter(text: str) -> Optional[str]:
+    """The `done` / `not done` a phrase ends with, if it ends with one."""
+    match = DONE_RE.search(" ".join((text or "").split()))
+    return match.group(1).lower() if match else None
+
+
 def parse(text: str) -> Query:
     """Read one query. Raises `QueryError` rather than guessing."""
     source = " ".join((text or "").split()).strip()
@@ -97,6 +108,13 @@ def parse(text: str) -> Query:
             rest = rest[5:].strip()
         if not rest:
             return Query(verb="open", source=source)
+        # `open` is already the ones that are not done, so the filter is not
+        # unknown here -- it is redundant, and saying which is the useful answer.
+        if _trailing_filter(rest):
+            raise QueryError(
+                f"`{source}` already means that — `done` and `not done` filter a "
+                "`show notes` query, e.g. `show notes in #mood not done`"
+            )
         # `in` is required here rather than assumed: without it any stray word
         # would be read as a collection name, so `open tas` would blame the
         # vault for a typo in the keyword.
@@ -124,6 +142,12 @@ def parse(text: str) -> Query:
                 "`show notes` needs to know which — `show notes in #mood` for a "
                 "tag, or `show notes in journal` for a collection"
             )
+        # A filter with nothing to filter is not a query about anything.
+        if rest.lower() in ("done", "not done"):
+            raise QueryError(
+                f"`{rest.lower()}` narrows which notes, but `{source}` does not "
+                "say which notes — try `show notes in #mood done`"
+            )
         if not rest[:2].lower() == "in" or rest[2:3].strip():
             raise QueryError(
                 f"don't know how to read `{source}` — try `show notes in #mood` "
@@ -139,6 +163,19 @@ def parse(text: str) -> Query:
                 "a query can narrow by a tag or by a collection, not both yet — "
                 "`show notes in #mood` or `show notes in journal`"
             )
+        # A trailing `done` / `not done` filters by whether the note is finished.
+        # Peeled off the end, which is where the person's own word goes, and
+        # `not done` is tried first so `done` cannot match inside it.
+        status = None
+        for word in ("not done", "done"):
+            if scope.lower().endswith(" " + word):
+                status = word
+                scope = scope[: -len(word)].strip()
+                break
+        if not scope:
+            raise QueryError(
+                "`show notes in` needs a tag or a collection after it"
+            )
         if scope.startswith("#"):
             tag = scope[1:].strip()
             if not tag:
@@ -146,8 +183,8 @@ def parse(text: str) -> Query:
                     "`#` on its own does not name a tag — that looks like "
                     "`show notes in #mood`"
                 )
-            return Query(verb="show", tag=tag, source=source)
-        return Query(verb="show", collection=scope, source=source)
+            return Query(verb="show", tag=tag, status=status, source=source)
+        return Query(verb="show", collection=scope, status=status, source=source)
 
     for verb in ("days", "completed"):
         if raw == verb:
@@ -159,6 +196,17 @@ def parse(text: str) -> Query:
             period, collection = _split_scope(source[len(verb) :].strip())
             if not period:
                 raise QueryError(f"`{verb}` needs to know when — {EXPECTED}")
+            word = _trailing_filter(period)
+            if word:
+                if verb == "days":
+                    raise QueryError(
+                        f"`days` lists days, not finished work, so there is "
+                        f"nothing for `{word}` to narrow"
+                    )
+                raise QueryError(
+                    f"`completed` already means that — `done` and `not done` "
+                    "filter a `show notes` query, e.g. `show notes in #mood not done`"
+                )
             return Query(
                 verb=verb, period=period, collection=collection, source=source
             )
@@ -253,7 +301,7 @@ def resolve(query: Query, notes: Sequence[Note], *, on: date) -> str:
     if query.verb == "open":
         return _open_markdown(pool)
     if query.verb == "show":
-        return _show_markdown(pool, query)
+        return _show_markdown(_by_status(pool, query.status), query)
     if query.verb != "completed":
         raise QueryError(f"don't know how to read `{query.source}` — {EXPECTED}")
 
@@ -343,6 +391,22 @@ def _link(note: Note) -> str:
     return f"[[{title}]]"
 
 
+def _by_status(notes: Sequence[Note], status: Optional[str]) -> list[Note]:
+    """Narrow to what is done, or to what is not.
+
+    `done` means exactly `complete`. A note marked `irrelevant` or `migrated` is
+    not done -- it was not finished, it was set aside -- and calling those done
+    would quietly turn this filter into "closed", which is the board's word for
+    a different question. `not done` is therefore everything else, and that is
+    what the answer line says when there is nothing to show.
+    """
+    if status is None:
+        return list(notes)
+    if status == "done":
+        return [n for n in notes if n.status is Status.COMPLETE]
+    return [n for n in notes if n.status is not Status.COMPLETE]
+
+
 def _recency(note: Note) -> date:
     """The day a note is from: the day it is about, else the day it was made.
 
@@ -366,6 +430,8 @@ def _show_markdown(notes: Sequence[Note], query: Query) -> str:
     the whole comparison reversed.
     """
     label = f"in #{query.tag}" if query.tag else f"in {query.collection}"
+    if query.status:
+        label = f"{label} that is {query.status}"
     if not notes:
         return f"_Nothing {label}._"
     ordered = sorted(notes, key=lambda n: (n.title or "").lower())

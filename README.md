@@ -570,6 +570,8 @@ completed this week
 | `completed this week in work` | what was finished in one collection |
 | `show notes in #mood` | the notes carrying that tag, newest first, linked |
 | `show notes in journal` | the notes in one collection, newest first, linked |
+| `show notes in #mood done` | only the ones that are complete |
+| `show notes in #mood not done` | only the ones that are not |
 
 Periods: `today`, `yesterday`, `this week`, `last week`, `this month`,
 `last month`, `on <YYYY-MM-DD>`, `in <YYYY-Www>`. Either period-taking verb
@@ -589,6 +591,12 @@ takes any period.
   not have is refused with the ones it does, because a misspelled tag and an
   empty one look identical in a note. `show notes` on its own is every note you
   own, which is not an answer, so it says what to write instead.
+- **`done` means complete, and nothing else.** A note marked `irrelevant` or
+  `migrated` was set aside rather than finished, so it counts as *not done* —
+  otherwise this filter would quietly mean "closed", which is the board's word
+  for a different question. `open tasks` and `completed` already mean it, so
+  adding the word to those is refused rather than ignored: a filter that is
+  dropped in silence answers something other than what you wrote.
 - **Newest means the day the note is about**, not the day the file was made:
   `created` is a date, so a whole sitting's notes tie on it. A list longer than
   25 says how many it is not showing, rather than looking like the whole set.

@@ -381,10 +381,10 @@ def test_find_blocks_reports_where_they_are():
 
 
 def _tagged(nid, title, tags, *, created=THURSDAY, dates=(), collection="journal",
-            signifier=Signifier.NOTE):
+            signifier=Signifier.NOTE, status=Status.OPEN):
     return Note(
         id=nid, collection=collection, title=title, body="", tags=list(tags),
-        dates=list(dates), signifier=signifier, status=Status.OPEN, created=created,
+        dates=list(dates), signifier=signifier, status=status, created=created,
     )
 
 
@@ -512,6 +512,65 @@ def test_an_empty_answer_says_so_rather_than_rendering_nothing():
     """
     out = query._show_markdown([], query.parse("show notes in #alpha"))
     assert out == "_Nothing in #alpha._"
+
+
+def test_done_filters_to_the_notes_that_are_complete():
+    notes = [
+        _tagged("a", "Finished one", ["alpha"], status=Status.COMPLETE),
+        _tagged("b", "Still going", ["alpha"]),
+    ]
+    out = query.resolve(query.parse("show notes in #alpha done"), notes, on=THURSDAY)
+    assert _titles(out) == ["Finished one"]
+
+
+def test_the_filter_does_not_care_which_case_you_write_it_in():
+    notes = [_tagged("a", "Finished one", ["alpha"], status=Status.COMPLETE)]
+    out = query.resolve(query.parse("show notes in #alpha DONE"), notes, on=THURSDAY)
+    assert _titles(out) == ["Finished one"]
+
+
+def test_not_done_is_everything_that_is_not_complete():
+    """`irrelevant` and `migrated` were set aside, not finished. Counting them as
+    done would quietly make this filter mean "closed" -- the board's word for a
+    different question -- so the definition is pinned here."""
+    notes = [
+        _tagged("a", "Complete", ["alpha"], status=Status.COMPLETE),
+        _tagged("b", "Open", ["alpha"], status=Status.OPEN),
+        _tagged("c", "Irrelevant", ["alpha"], status=Status.IRRELEVANT),
+        _tagged("d", "Migrated", ["alpha"], status=Status.MIGRATED),
+    ]
+    out = query.resolve(query.parse("show notes in #alpha not done"), notes, on=THURSDAY)
+    assert _titles(out) == ["Irrelevant", "Migrated", "Open"]
+
+
+def test_the_filter_works_on_a_collection_as_well_as_a_tag():
+    notes = [
+        _tagged("a", "Handed in", [], collection="school", status=Status.COMPLETE),
+        _tagged("b", "Still going", [], collection="school"),
+    ]
+    out = query.resolve(query.parse("show notes in school not done"), notes, on=THURSDAY)
+    assert _titles(out) == ["Still going"]
+
+
+def test_a_filter_needs_a_scope_to_filter():
+    with pytest.raises(query.QueryError) as err:
+        query.parse("show notes done")
+    assert "which notes" in str(err.value)
+
+
+def test_a_filter_on_a_verb_that_already_means_it_is_refused():
+    """`open tasks` is only the ones that are not done, so the word is redundant
+    rather than unknown -- and a shrug would be the wrong answer to give."""
+    for text in ("open tasks done", "completed this week not done"):
+        with pytest.raises(query.QueryError) as err:
+            query.parse(text)
+        assert "already means that" in str(err.value)
+
+
+def test_the_empty_line_says_which_filter_was_applied():
+    notes = [_tagged("a", "Still going", ["alpha"])]
+    out = query.resolve(query.parse("show notes in #alpha done"), notes, on=THURSDAY)
+    assert out == "_Nothing in #alpha that is done._"
 
 
 def test_the_query_says_what_you_can_write():
