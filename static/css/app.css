@@ -3021,6 +3021,15 @@ textarea { resize: vertical; line-height: 1.6; }
 .btn.hidden { display: none; }
 .history-view.hidden { display: none; }
 
+/* A view must scroll itself. `html, body { overflow: hidden }` (section 1) means
+   the page cannot scroll on a desktop -- only under 860px does the responsive
+   block hand scrolling back to the body. So a view with more content than the
+   window is a view with content you cannot reach, which is what this one was:
+   the last rows of the vault's history sat below the fold with nothing to
+   scroll. `.workspaces-view`, the dashboard, mood and transcribe all declare
+   this; `tools/check-scroll.mjs` is what asks every view the question. */
+.history-view { min-height: 0; overflow-y: auto; }
+
 .history-body {
   display: grid;
   gap: 20px;
