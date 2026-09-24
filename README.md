@@ -31,7 +31,9 @@ make test-js
 Deep links (shareable, and they survive reload):
 
 ```
-#/                          rapid log
+#/                          home (the dashboard)
+#/view/home                 home, explicitly
+#/view/rapid                rapid log
 #/view/board                kanban board
 #/view/mood                 mood & pain heatmap
 #/view/calendar             calendar tab
@@ -117,6 +119,8 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
 
 ## Features
 
+- **Home** — the dashboard the app opens on: calendar, clock, statistics, mood
+  streak, today, and the board's counts (see [Home](#home))
 - **Rapid Log** — type `• task`, `○ event`, `– note` and hit Enter
 - **Board** — a kanban view with real dependencies: columns, drag or tap to
   move, blocked cards, cycle-safe blockers (see [Task management](#task-management))
@@ -143,6 +147,40 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
   any Markdown folder with `NOOKBOARD_VAULT` (see [Obsidian](#obsidian))
 - **Local AI** — summarize / suggest tags / suggest links / ask your notes,
   streamed from llama.cpp (see [Local AI](#local-ai))
+
+## Home
+
+The view the app opens on. Six cards over the same vault every other view reads.
+
+| card | what it shows |
+|---|---|
+| Calendar | the month, with a tint on every day that has something written on it |
+| Clock | the greeting, the time, the date |
+| Statistics | what the vault holds: files, tasks, tags, collections |
+| Mood | the streak and today's reading |
+| Today | whether today has a note yet, and what has been finished |
+| Board | ready / open / blocked / done |
+
+**Why the clock is the browser's job.** Every other card is a fact about the
+vault, and the server knows those. The time is not one: a clock rendered
+server-side is wrong by the time you read it. So the greeting and the time are
+painted from `new Date()` in `static/js/home.js`, and the mini calendar is laid
+out by the same `monthGrid()` the Calendar view uses — the same function, not a
+second one that could disagree about which weekday the 1st falls on.
+
+**Why the cards cannot contradict the views they stand for.** Every number is
+either copied from the layer that owns it (`board_summary`,
+`daily.completed_on`, `mood.summarize`) or counted here exactly once. The first
+version of the statistics card counted "open" for itself and said 2 where the
+board said 3: the board counts anything not closed — notes included — and that
+count had quietly decided "open" meant open *tasks*. The tile is gone. The board
+card carries that number, and `tests/test_home.py` pins the arrangement so it
+does not come back.
+
+The dashboard's search hands off to the topbar search rather than growing a
+second one, and the three entry buttons on the icon row type the notebook's own
+signifiers (`•`, `○`, `–`) into the rapid log — the same glyphs the legend uses,
+read by the same parser.
 
 ## Task management
 
@@ -507,6 +545,9 @@ reads correctly in March.
 - `PATCH  /api/notes/{id}`
 - `DELETE /api/notes/{id}`
 - `GET    /api/search?q=`
+- `GET    /api/home?month=YYYY-MM-DD` → every card on the dashboard in one
+  response, so the cards are one consistent reading rather than six separate
+  ones. `month` picks the month the calendar card shows and defaults to now.
 - `GET    /api/mood?days=&start=&end=` → a collapsed record per logged day, plus
   `summary` (days logged, streak, averages, counts) and the level vocabulary
 - `GET    /api/insight` → `pain_vs_output`: the paired days, mean finished per

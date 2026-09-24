@@ -105,6 +105,29 @@ def is_generated_note_id(note_id: Optional[str]) -> bool:
     return is_daily_note_id(note_id) or is_weekly_note_id(note_id)
 
 
+#: The collection templates live in, here rather than in `templates.py` for the
+#: same reason `iso_week` is: three features need to know whether a note is a
+#: shape for other notes, and one answer is what keeps them agreeing.
+TEMPLATES_COLLECTION = "templates"
+
+
+def is_template(note: "Note") -> bool:
+    """Whether a note is a template -- a shape rather than a thing."""
+    return getattr(note, "collection", None) == TEMPLATES_COLLECTION
+
+
+def is_work(note: "Note") -> bool:
+    """Whether a note is a thing to be doing, rather than a shape or a record.
+
+    A template is a shape for other notes and a period note is something the
+    program wrote, so neither is work. The board hides that set, the dashboard
+    counts it, and a query that was not narrowed to a collection leaves it out:
+    all three have to hide exactly the same thing, or the app contradicts
+    itself about what you have left to do.
+    """
+    return not is_template(note) and not is_generated_note_id(note.id)
+
+
 def iso_week(day: date) -> str:
     """The ISO week label containing `day`, e.g. `2026-W39`.
 

@@ -78,6 +78,19 @@
   --shadow-2: 0 4px 16px -4px rgba(0, 0, 0, .45);
   --shadow-3: 0 18px 48px -12px rgba(0, 0, 0, .6);
 
+  /* glass — the dashboard's surface: the vault seen through the window.
+     Tinted from the Catppuccin tokens above rather than given hexes of its
+     own, so re-theming is still the token block and nothing else. */
+  --glass:        color-mix(in srgb, var(--base) 52%, transparent);
+  --glass-strong: color-mix(in srgb, var(--mantle) 84%, transparent);
+  --glass-line:   color-mix(in srgb, var(--lavender) 24%, transparent);
+  --glass-line-hot: color-mix(in srgb, var(--pink) 55%, transparent);
+  --glass-blur:   blur(18px) saturate(150%);
+  /* A panel of glass catches the light along its top edge. Without this the
+     cards read as flat panels that happen to be semi-transparent. */
+  --glass-light:  inset 0 1px 0 color-mix(in srgb, var(--lavender) 14%, transparent);
+  --glass-glow:   0 18px 44px -22px color-mix(in srgb, var(--mauve) 70%, transparent);
+
   /* accent gradient (pink → lavender → cyan) */
   --grad: linear-gradient(100deg, var(--pink), var(--mauve) 45%, var(--sky));
 
@@ -2117,6 +2130,399 @@ textarea { resize: vertical; line-height: 1.6; }
 #template-pick.is-error {
   border-color: var(--red);
   color: var(--red);
+}
+
+/* 17. home dashboard ------------------------------------------------------ */
+/* The vault seen from the doorway. Every number here comes from /api/home, so
+   nothing in this section decides anything — it only lays it out. The glass
+   tokens live in section 1 with the rest. */
+
+.home-view {
+  min-height: 0;
+  overflow-y: auto;
+  background:
+    radial-gradient(1200px 560px at 8% -12%, color-mix(in srgb, var(--mauve) 34%, transparent), transparent 64%),
+    radial-gradient(980px 500px at 92% 0%, color-mix(in srgb, var(--teal) 22%, transparent), transparent 60%),
+    radial-gradient(820px 560px at 50% 114%, color-mix(in srgb, var(--pink) 20%, transparent), transparent 66%),
+    var(--base);
+}
+.home-view.hidden { display: none; }
+
+.home-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 1160px;
+  /* min-height, not height: a tall window stretches the cards to fill it, a
+     short one scrolls. Either way the layout ends where the pane does rather
+     than leaving a band of empty wall below it. */
+  min-height: 100%;
+  margin: 0 auto;
+  padding: 30px 24px 34px;
+}
+
+/* ---- hero --------------------------------------------------------------- */
+.home-hero {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 13px;
+  margin-top: 4px;
+}
+.home-mark {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  color: var(--pink);
+  filter: drop-shadow(0 0 16px color-mix(in srgb, var(--mauve) 70%, transparent));
+}
+.home-title {
+  margin: 0;
+  font-size: clamp(28px, 4.2vw, 44px);
+  font-weight: 650;
+  letter-spacing: -.02em;
+  background: var(--grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 3px 26px color-mix(in srgb, var(--mauve) 50%, transparent));
+}
+
+/* ---- the command row ---------------------------------------------------- */
+.home-command {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+.home-search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: min(430px, 100%);
+  height: 38px;
+  padding: 0 12px;
+  background: var(--glass);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+  transition: border-color .18s var(--ease-out), box-shadow .18s var(--ease-out);
+}
+.home-search:focus-within {
+  border-color: var(--glass-line-hot);
+  box-shadow: var(--glass-glow);
+}
+.home-search-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: var(--fg-faint);
+  stroke-width: 1.9;
+  stroke-linecap: round;
+}
+.home-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13.5px;
+}
+.home-search input::placeholder { color: var(--fg-faint); }
+
+.home-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 38px;
+  padding: 0 15px;
+  background: color-mix(in srgb, var(--mauve) 16%, transparent);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line-hot);
+  border-radius: var(--r-md);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background .18s var(--ease-out), box-shadow .18s var(--ease-out),
+              transform .18s var(--ease-pop);
+}
+.home-cta:hover {
+  background: color-mix(in srgb, var(--mauve) 30%, transparent);
+  box-shadow: var(--glass-glow);
+  transform: translateY(-1px);
+}
+.home-cta:active { transform: translateY(0); }
+
+/* ---- quick actions ------------------------------------------------------ */
+.home-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.h-action {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  background: var(--glass);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-sm);
+  color: var(--fg-dim);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .16s var(--ease-out), border-color .16s var(--ease-out),
+              transform .16s var(--ease-pop), background .16s var(--ease-out);
+}
+.h-action:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--mauve) 22%, transparent);
+  border-color: var(--glass-line-hot);
+  transform: translateY(-2px);
+}
+/* The view buttons are line icons; the three entry buttons are the notebook's
+   own signifiers (• ○ –), the same glyphs the legend uses, because those three
+   mean a kind of entry and the rest mean somewhere else to look. */
+/* 19px in a 34px button, and a stroke thick enough to survive it: these are
+   drawn on a 24-unit grid, so a 1.6 stroke at 17px came out thinner than a
+   pixel and smeared. */
+.h-action svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.h-action--entry { font-size: 16px; }
+
+/* ---- the card grid ------------------------------------------------------ */
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  /* Rows are as tall as their content and no taller, with a floor so a nearly
+     empty vault still gets cards rather than strips. Stretching them to fill a
+     tall window was tried and is worse: it turns four numbers into a 340px card
+     with the numbers adrift in the middle. A dashboard is allowed to leave wall
+     at the bottom. */
+  grid-auto-rows: minmax(178px, auto);
+  align-content: start;
+  gap: 14px;
+  margin-top: 6px;
+}
+.h-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 15px 15px;
+  background: var(--glass);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2), var(--glass-light);
+  min-width: 0;
+}
+.h-card--calendar { grid-column: span 4; }
+.h-card--clock    { grid-column: span 2; }
+.h-card--stats    { grid-column: span 3; }
+.h-card--mood     { grid-column: span 3; }
+.h-card--today    { grid-column: span 7; }
+.h-card--board    { grid-column: span 5; }
+.h-card--stats, .h-card--board { justify-content: center; }
+.h-card--today, .h-card--board { min-height: 186px; }
+
+.h-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.h-head h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+/* ---- clock -------------------------------------------------------------- */
+/* The short cards centre their content: a row of grid cards stretches to the
+   tallest of them, and a card whose content is stuck at the top reads as one
+   that failed to load. */
+.h-card--clock {
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  text-align: center;
+}
+.h-greeting { margin: 0; font-size: 12.5px; color: var(--fg-dim); }
+.h-time {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 600;
+  letter-spacing: -.03em;
+  color: var(--fg);
+}
+.h-date { margin: 0; font-size: 11.5px; color: var(--fg-faint); }
+
+/* ---- tiles -------------------------------------------------------------- */
+.h-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.h-tiles--wide { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.h-tile { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.h-tile-value {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.h-tile-label {
+  font-size: 10px;
+  letter-spacing: .04em;
+  color: var(--fg-faint);
+}
+
+/* ---- mood --------------------------------------------------------------- */
+.h-card--mood {
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  text-align: center;
+}
+.h-big {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.h-sub { margin: 0; font-size: 11.5px; color: var(--fg-faint); }
+
+/* ---- today -------------------------------------------------------------- */
+.h-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.h-list li {
+  font-size: 12.5px;
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h-button {
+  align-self: flex-start;
+  margin-top: auto;
+  height: 30px;
+  padding: 0 12px;
+  background: color-mix(in srgb, var(--mauve) 16%, transparent);
+  border: 1px solid var(--glass-line-hot);
+  border-radius: var(--r-sm);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background .16s var(--ease-out);
+}
+.h-button:hover { background: color-mix(in srgb, var(--mauve) 30%, transparent); }
+.h-button[data-kind="open"] {
+  background: color-mix(in srgb, var(--teal) 14%, transparent);
+  border-color: color-mix(in srgb, var(--teal) 45%, transparent);
+}
+
+/* ---- the mini calendar -------------------------------------------------- */
+.h-month {
+  margin: -4px 0 0;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--fg-dim);
+}
+.mini-cal {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+}
+.mini-cal-head {
+  padding-bottom: 2px;
+  font-size: 9.5px;
+  letter-spacing: .03em;
+  color: var(--fg-faint);
+  text-align: center;
+}
+.mini-cal-day {
+  display: grid;
+  place-items: center;
+  /* A fixed height rather than aspect-ratio: square cells scale with the
+     card's width, so a wider calendar made the whole first row taller and the
+     other three cards stretched to match. */
+  height: 30px;
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.mini-cal-day.is-out { visibility: hidden; }
+.mini-cal-day.has-notes {
+  background: color-mix(in srgb, var(--mauve) 26%, transparent);
+  color: var(--fg);
+  font-weight: 600;
+}
+.mini-cal-day.is-today {
+  outline: 1.5px solid var(--pink);
+  outline-offset: -1px;
+  color: var(--pink);
+  font-weight: 650;
+}
+.h-nav { display: flex; gap: 2px; }
+.h-nav-btn {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-sm);
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .16s var(--ease-out), border-color .16s var(--ease-out);
+}
+.h-nav-btn:hover { color: var(--fg); border-color: var(--glass-line-hot); }
+
+/* Narrower panes: the four small cards pair up, then everything stacks. */
+@media (max-width: 1240px) {
+  .h-card--calendar, .h-card--stats, .h-card--mood { grid-column: span 6; }
+  .h-card--clock { grid-column: span 6; }
+  .h-card--today, .h-card--board { grid-column: span 12; }
+}
+@media (max-width: 720px) {
+  .h-card { grid-column: span 12; }
+  .home-inner { padding: 20px 14px 30px; }
+  .home-search { width: 100%; }
+  .home-command { flex-wrap: wrap; }
 }
 
 /* 15. responsive ---------------------------------------------------------- */

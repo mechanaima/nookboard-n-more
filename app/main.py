@@ -26,6 +26,7 @@ from .models import (
     MOOD_LEVELS, PAIN_MAX, PAIN_MIN, STAGE_LABELS, Note, Signifier, Stage, Status,
     coerce_pain, is_generated_note_id, reconcile, stage_for_status, stamp_completed,
 )
+from . import home
 from . import insight
 from . import mood as moodlib
 from . import query as querylib
@@ -507,6 +508,28 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         when there is not enough evidence to say anything.
         """
         return {"pain_vs_output": insight.pain_vs_output(vault.list_all())}
+
+    @app.get("/api/home")
+    def home_view(month: Optional[str] = None):
+        """Everything the dashboard shows, in one call.
+
+        One endpoint rather than six the client has to join: the cards are meant
+        to agree with each other, and the cheapest way to guarantee that is for
+        them to be answered together. `month` picks the month the calendar card
+        shows (`YYYY-MM-DD`); it defaults to today's.
+        """
+        today = date.today()
+        shown = _coerce_date(month, "month") if month else today
+        notes = vault.list_all()
+        return home.summary(
+            notes,
+            root=root,
+            today=today,
+            calendar_counts=db.month_counts(shown.year, shown.month),
+            month=shown,
+            # The real list, so the count matches the Collections view.
+            collections=list_collections(),
+        )
 
     @app.get("/api/mood")
     def mood_series(

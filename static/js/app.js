@@ -3,6 +3,10 @@ import { parseRapidInput } from "./rapid.js";
 import { monthGrid, shiftMonth } from "./calendar.js";
 import { extractWikilinks, renderWikilinks } from "./wikilink.js";
 import { weekKey } from "./week.js";
+import {
+  BOARD_TILES, clockTime, greeting, longDate, statTiles, todayAction, todayLine,
+  trimmedMonth,
+} from "./home.js";
 import { splitQueries, spliceQueries } from "./query.js";
 import {
   STAGES, blockedLabel, blocksLabel, completionWarning, depCandidates,
@@ -54,6 +58,22 @@ const api = {
   async search(q)        { return (await fetch(`/api/search?q=${encodeURIComponent(q)}`)).json(); },
   async calendar(y, m)   { return (await fetch(`/api/calendar/${y}/${m}`)).json(); },
   async backlinks(id)    { return (await fetch(`/api/notes/${encodeURIComponent(id)}/backlinks`)).json(); },
+
+  // -- the dashboard
+  async home(month) {
+    const qs = month ? `?month=${encodeURIComponent(month)}` : "";
+    return jsonOrThrow(await fetch(`/api/home${qs}`));
+  },
+
+  // Writing a day's note is the same request the daily scheduler makes: the
+  // note is written by the run that summarises it.
+  async writeDay(day) {
+    return jsonOrThrow(await fetch("/api/daily/summary", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ date: day, refresh: true }),
+    }));
+  },
 
   // -- queries in notes
   // jsonOrThrow so a query the server refused says so in the note, rather than
@@ -160,7 +180,7 @@ const SIDEBAR_VIEWS = ["rapid", "collections", "timeline", "calendar"];
 //: Views that need the full width and therefore trade away the sidebar: the
 //: board (five columns) and mood (a year of weeks). They keep the editor as a
 //: second column so a note can be read or fixed without leaving the view.
-const WIDE_VIEWS = ["board", "mood"];
+const WIDE_VIEWS = ["home", "board", "mood"];
 
 function showView(name) {
   state.activeView = name;
@@ -174,6 +194,7 @@ function showView(name) {
   moveInk();
   if (name === "calendar") renderCalendar();
   render();
+  if (name === "home") renderHome();
   if (name === "board") renderBoard();
   if (name === "mood") renderMood();
 }
@@ -193,6 +214,9 @@ async function refresh() {
   // re-fetched rather than recomputed from a possibly-stale client copy.
   if (state.activeView === "board") await renderBoard();
   if (state.activeView === "mood") await renderMood();
+  // The dashboard is derived server-side too, and every number on it can move
+  // when a note changes, so it is asked again rather than patched.
+  if (state.activeView === "home") await renderHome();
 }
 
 // A wide view trades the sidebar for itself and keeps the editor alongside, so
@@ -2121,14 +2145,140 @@ function syncHash() {
   if (location.hash !== next) history.replaceState(null, "", next);
 }
 
-const VALID_VIEWS = ["rapid", "board", "mood", "collections", "timeline", "calendar"];
+const VALID_VIEWS = [
+  "home", "rapid", "board", "mood", "collections", "timeline", "calendar",
+];
 
 function readHash() {
   const { view, note } = parseHash();
   return {
-    view: VALID_VIEWS.includes(view) ? view : "rapid",
+    view: VALID_VIEWS.includes(view) ? view : "home",
     note: note || null,
   };
+}
+
+/* -------------------------------------------------------- the dashboard -- */
+/* Every number on the dashboard comes from /api/home, so nothing in here
+   decides anything -- it paints, and it hands clicks off to the machinery the
+   rest of the app already has. */
+
+const MINI_CAL_DAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+
+//: What a quick-action button puts in the rapid log's box. The glyph is the
+//: whole intent -- parseRapidInput() reads it, so the button and a typed "• "
+//: cannot disagree about what makes a task.
+const ENTRY_GLYPH = { task: "• ", event: "○ ", note: "– " };
+
+function paintClock() {
+  const host = $("#home-greeting");
+  if (!host) return;
+  const now = new Date();
+  host.textContent = greeting(now.getHours());
+  $("#home-time").textContent = clockTime(now);
+  $("#home-date").textContent = longDate(now);
+}
+
+function paintTiles(host, tiles) {
+  host.textContent = "";
+  for (const tile of tiles) {
+    const li = document.createElement("li");
+    li.className = "h-tile";
+    const value = document.createElement("span");
+    value.className = "h-tile-value";
+    value.textContent = String(tile.value);
+    const label = document.createElement("span");
+    label.className = "h-tile-label";
+    label.textContent = tile.label;
+    li.append(value, label);
+    host.append(li);
+  }
+}
+
+// Laid out by monthGrid() -- the same function the Calendar view builds its own
+// grid with, so the two cannot disagree about which weekday the 1st falls on.
+function renderMiniCalendar(card) {
+  const host = $("#home-mini-cal");
+  host.textContent = "";
+  for (const name of MINI_CAL_DAYS) {
+    const head = document.createElement("div");
+    head.className = "mini-cal-head";
+    head.textContent = name;
+    host.append(head);
+  }
+  const counts = card.counts || {};
+  for (const cell of trimmedMonth(monthGrid(card.year, card.month))) {
+    const day = document.createElement("div");
+    day.className = "mini-cal-day";
+    if (!cell.inMonth) {
+      // Days either side of the month keep their slot so the columns line up,
+      // but they are not this month and carry no dot.
+      day.classList.add("is-out");
+    } else {
+      day.textContent = String(cell.day);
+      if (counts[cell.iso]) {
+        day.classList.add("has-notes");
+        day.title = `${counts[cell.iso]} on ${cell.iso}`;
+      }
+      if (cell.iso === card.today) day.classList.add("is-today");
+    }
+    host.append(day);
+  }
+}
+
+function paintHome() {
+  const payload = state.home;
+  if (!payload) return;
+
+  $("#home-vault").textContent = payload.vault;
+  paintClock();
+  $("#home-month").textContent = payload.calendar.label;
+  renderMiniCalendar(payload.calendar);
+  paintTiles($("#home-stats"), statTiles(payload.statistics));
+  paintTiles($("#home-board"), statTiles(payload.board, BOARD_TILES));
+
+  $("#home-streak").textContent = String(payload.mood.streak);
+  const moodBits = [];
+  if (payload.mood.level) moodBits.push(payload.mood.level);
+  if (payload.mood.pain !== null && payload.mood.pain !== undefined) {
+    moodBits.push(`pain ${payload.mood.pain}`);
+  }
+  if (!payload.mood.logged_today) moodBits.push("not logged today");
+  $("#home-mood-line").textContent = moodBits.join(" · ");
+
+  const today = payload.today_card;
+  $("#home-today-line").textContent = todayLine(today);
+  const list = $("#home-today-list");
+  list.textContent = "";
+  for (const title of today.titles.slice(0, 5)) {
+    const li = document.createElement("li");
+    li.textContent = `• ${title}`; // textContent: a title is user text
+    list.append(li);
+  }
+  const action = todayAction(today);
+  const button = $("#home-today-action");
+  button.textContent = action.label;
+  button.dataset.kind = action.kind;
+}
+
+async function renderHome() {
+  const month = state.homeMonth || new Date();
+  const first = localIsoDate(new Date(month.getFullYear(), month.getMonth(), 1));
+  try {
+    state.home = await api.home(first);
+  } catch {
+    // Leave the cards standing. An empty dashboard reads as an empty vault,
+    // which is a worse thing to say than a slightly stale one.
+    return;
+  }
+  paintHome();
+}
+
+function shiftHomeMonth(delta) {
+  const shown = state.home?.calendar;
+  const base = shown ? new Date(shown.year, shown.month - 1, 1) : new Date();
+  const [year, month] = shiftMonth(base.getFullYear(), base.getMonth() + 1, delta);
+  state.homeMonth = new Date(year, month - 1, 1);
+  return renderHome();
 }
 
 /* ------------------------------------------------------------------ boot -- */
@@ -2160,6 +2310,57 @@ window.addEventListener("DOMContentLoaded", async () => {
     renderBoard();
   });
   $("#board-new-task").addEventListener("click", createBlankNote);
+
+  // -- the dashboard
+  $("#home-new-note").addEventListener("click", createBlankNote);
+  $("#home-search").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    // Hand off to the real search rather than growing a second one: whatever
+    // is typed here is what the topbar would have searched.
+    const box = $("#search-box");
+    box.value = e.target.value;
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    box.focus();
+    box.select();
+  });
+  $$("#home-view [data-entry]").forEach((b) => {
+    b.addEventListener("click", () => {
+      // Through the tab, so the URL and the ink bar move with it.
+      showView("rapid");
+      const input = $("#rapid-input");
+      input.value = ENTRY_GLYPH[b.dataset.entry] || "";
+      input.focus();
+    });
+  });
+  $$("#home-view [data-jump]").forEach((b) => {
+    b.addEventListener("click", () => {
+      document.querySelector(`.tab[data-view="${b.dataset.jump}"]`)?.click();
+    });
+  });
+  $("#home-today-action").addEventListener("click", async () => {
+    const card = state.home?.today_card;
+    if (!card) return;
+    if ($("#home-today-action").dataset.kind === "open") {
+      await openEditor(`daily-${card.date}`);
+      return;
+    }
+    $("#home-today-action").disabled = true;
+    $("#home-today-action").textContent = "writing…";
+    try {
+      await api.writeDay(card.date);
+    } catch (err) {
+      $("#home-today-action").textContent = "could not write it — try again";
+      $("#home-today-action").disabled = false;
+      return;
+    }
+    $("#home-today-action").disabled = false;
+    await refresh(); // refresh() re-renders home, which repaints the card
+  });
+  $("#home-month-prev").addEventListener("click", () => shiftHomeMonth(-1));
+  $("#home-month-next").addEventListener("click", () => shiftHomeMonth(1));
+  // The clock is the one card that ages on its own.
+  setInterval(paintClock, 20000);
 
   // -- dependencies
   $("#dep-add-form").addEventListener("submit", (e) => {

@@ -21,8 +21,7 @@ from datetime import date, timedelta
 from typing import Optional, Sequence
 
 from . import daily, weekly
-from .models import Note, Signifier, Status, is_generated_note_id, iso_week_bounds
-from .templates import is_template
+from .models import Note, Signifier, Status, is_work, iso_week_bounds
 
 #: The fence a query is written in, as ```nookboard ... ```
 LANGUAGE = "nookboard"
@@ -233,10 +232,7 @@ def _pool(query: Query, notes: Sequence[Note]) -> list[Note]:
     """
     if query.collection:
         return _named(notes, query.collection)
-    return [
-        n for n in notes
-        if not is_template(n) and not is_generated_note_id(n.id)
-    ]
+    return [n for n in notes if is_work(n)]
 
 
 def _named(notes: Sequence[Note], wanted: str) -> list[Note]:

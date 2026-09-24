@@ -22,7 +22,8 @@
     </a>
 
     <nav class="tabs" role="tablist" aria-label="views">
-      <button data-view="rapid"       class="tab active" role="tab">Rapid Log</button>
+      <button data-view="home"        class="tab active" role="tab">Home</button>
+      <button data-view="rapid"       class="tab"        role="tab">Rapid Log</button>
       <button data-view="board"       class="tab"        role="tab">Board</button>
       <button data-view="mood"        class="tab"        role="tab">Mood</button>
       <button data-view="collections" class="tab"        role="tab">Collections</button>
@@ -112,6 +113,113 @@
         <div id="cal-summary" class="cal-summary"></div>
       </section>
     </aside>
+
+    <section id="home-view" class="home-view hidden">
+      <div class="home-inner">
+
+        <header class="home-hero">
+          <svg class="home-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 2.6 13.8 9.2 20.4 11 13.8 12.8 12 19.4 10.2 12.8 3.6 11 10.2 9.2Z"
+                  fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+          </svg>
+          <h1 id="home-vault" class="home-title">nookboard</h1>
+        </header>
+
+        <div class="home-command">
+          <label class="home-search">
+            <svg class="home-search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="10.8" cy="10.8" r="6.4"/><path d="m15.6 15.6 4.4 4.4"/>
+            </svg>
+            <input id="home-search" type="search" placeholder="Search notes…" autocomplete="off"
+                   aria-label="search notes from the dashboard">
+          </label>
+          <button id="home-new-note" class="home-cta" type="button">＋ New note</button>
+        </div>
+
+        <div class="home-actions" role="toolbar" aria-label="quick actions">
+          <button class="h-action h-action--entry" type="button" data-entry="task"
+                  title="new task" aria-label="new task">•</button>
+          <button class="h-action h-action--entry" type="button" data-entry="event"
+                  title="new event" aria-label="new event">○</button>
+          <button class="h-action h-action--entry" type="button" data-entry="note"
+                  title="new note" aria-label="new note">–</button>
+          <button class="h-action" type="button" data-jump="board" title="board" aria-label="board">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <rect x="3.4" y="4.4" width="17.2" height="15.2" rx="2"/>
+              <path d="M9.2 4.4v15.2M14.8 4.4v15.2"/>
+            </svg>
+          </button>
+          <button class="h-action" type="button" data-jump="mood" title="mood" aria-label="mood">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="8"/>
+              <path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" stroke="none"/>
+            </svg>
+          </button>
+          <button class="h-action" type="button" data-jump="calendar" title="calendar" aria-label="calendar">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <rect x="3.5" y="5" width="17" height="15" rx="2"/>
+              <path d="M8 3.4v3.2M16 3.4v3.2M3.5 10h17"/>
+            </svg>
+          </button>
+          <button class="h-action" type="button" data-jump="timeline" title="timeline" aria-label="timeline">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M3.5 12h4M11 12h3.5M18.5 12h2"/>
+              <path d="M15 8.2 18.8 12 15 15.8"/>
+            </svg>
+          </button>
+          <button class="h-action" type="button" data-jump="collections" title="collections" aria-label="collections">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M3.4 8.4A2.3 2.3 0 0 1 5.7 6.1h3.5l2.3 2.6h6.8a2.3 2.3 0 0 1 2.3 2.3v6.6a2.3 2.3 0 0 1-2.3 2.3H5.7a2.3 2.3 0 0 1-2.3-2.3Z"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="home-grid">
+          <section class="h-card h-card--calendar">
+            <div class="h-head">
+              <h2>Calendar</h2>
+              <span class="h-nav">
+                <button id="home-month-prev" class="h-nav-btn" type="button" title="previous month">‹</button>
+                <button id="home-month-next" class="h-nav-btn" type="button" title="next month">›</button>
+              </span>
+            </div>
+            <p id="home-month" class="h-month">—</p>
+            <div id="home-mini-cal" class="mini-cal"></div>
+          </section>
+
+          <section class="h-card h-card--clock">
+            <p id="home-greeting" class="h-greeting">—</p>
+            <p id="home-time" class="h-time">—</p>
+            <p id="home-date" class="h-date"></p>
+          </section>
+
+          <section class="h-card h-card--stats">
+            <div class="h-head"><h2>Statistics</h2></div>
+            <ul id="home-stats" class="h-tiles h-tiles--wide"></ul>
+          </section>
+
+          <section class="h-card h-card--mood">
+            <div class="h-head"><h2>Mood</h2></div>
+            <p id="home-streak" class="h-big">0</p>
+            <p class="h-sub">day streak</p>
+            <p id="home-mood-line" class="h-sub"></p>
+          </section>
+
+          <section class="h-card h-card--today">
+            <div class="h-head"><h2>Today</h2></div>
+            <p id="home-today-line" class="h-sub">—</p>
+            <ul id="home-today-list" class="h-list"></ul>
+            <button id="home-today-action" class="h-button" type="button">—</button>
+          </section>
+
+          <section class="h-card h-card--board">
+            <div class="h-head"><h2>Board</h2></div>
+            <ul id="home-board" class="h-tiles h-tiles--wide"></ul>
+          </section>
+        </div>
+
+      </div>
+    </section>
 
     <section id="board-view" class="board-view hidden">
       <div class="board-bar">

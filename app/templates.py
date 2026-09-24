@@ -12,11 +12,20 @@ import re
 from datetime import date, datetime
 from typing import Iterable, Optional
 
-from .models import Note, Signifier, Status, iso_week, iso_week_bounds
-
-#: The collection templates live in. A folder, like every other collection, so
-#: there is one rule to remember: put a note in here and it becomes a template.
-TEMPLATES_COLLECTION = "templates"
+# `TEMPLATES_COLLECTION` and `is_template` are re-exported from `models` because
+# they stopped being only this module's business: the board, the dashboard's
+# counts and an unscoped query all have to agree about what a shape is. A folder,
+# like every other collection, so there is one rule: put a note in the folder and
+# it becomes a template.
+from .models import (
+    TEMPLATES_COLLECTION,
+    Note,
+    Signifier,
+    Status,
+    is_template,
+    iso_week,
+    iso_week_bounds,
+)
 
 PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
@@ -27,11 +36,6 @@ PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 #: `week_start`/`week_end` exist because a template about a week has to say
 #: which week, and `{{week}}` alone is a label (`2026-W39`) rather than a span.
 KNOWN = ("date", "time", "week", "title", "week_start", "week_end")
-
-
-def is_template(note: Note) -> bool:
-    """Whether a note is a shape for other notes."""
-    return getattr(note, "collection", None) == TEMPLATES_COLLECTION
 
 
 def list_templates(notes: Iterable[Note]) -> list[Note]:

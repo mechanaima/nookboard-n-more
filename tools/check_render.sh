@@ -29,11 +29,12 @@ PROFILE="$(mktemp -d /tmp/nookboard-check-XXXXXX)"
 DOM="$(mktemp /tmp/nookboard-dom-XXXXXX.html)"
 BOARD_DOM="$(mktemp /tmp/nookboard-board-XXXXXX.html)"
 MOOD_DOM="$(mktemp /tmp/nookboard-mood-XXXXXX.html)"
+HOME_DOM="$(mktemp /tmp/nookboard-home-XXXXXX.html)"
 cleanup() {
   for id in "$NOTE_ID" "$TARGET_ID" "$BOARD_ID" "$BOARD_BLOCKER" "$MOOD_ID"; do
     curl -s -o /dev/null -X DELETE "$BASE/api/notes/$id" || true
   done
-  rm -rf "$PROFILE" "$DOM" "$BOARD_DOM" "$MOOD_DOM"
+  rm -rf "$PROFILE" "$DOM" "$BOARD_DOM" "$MOOD_DOM" "$HOME_DOM"
 }
 trap cleanup EXIT
 
@@ -251,6 +252,45 @@ check_mood "scroll affordance present"     'id="mood-scroll-hint"'
 check_mood "insight reading present"        'id="insight-reading"'
 check_mood "insight caveat refuses cause"   'not a cause'
 check_mood "insight says something"         'class="insight-band"|class="insight-empty"|Not enough to go on'
+
+# --- render 4: the dashboard ----------------------------------------------
+# Loaded from a bare URL on purpose: Home is the view the app opens on, so this
+# doubles as the assertion that the default view still renders without a hash.
+# Every card is painted from /api/home after boot, so these checks are really
+# asking whether that fetch landed -- a throw inside renderHome() would leave
+# the placeholder dashes in place, which is what the two _absent checks pin.
+HOME_URL="$BASE/"
+chromium --headless=new --disable-gpu --no-sandbox \
+  --user-data-dir="$PROFILE" --virtual-time-budget=5000 \
+  --dump-dom "$HOME_URL" > "$HOME_DOM" 2>/dev/null
+
+check_home() { check_file "$HOME_DOM" "$1" "$2"; }
+check_home_absent() { check_absent "$HOME_DOM" "$1" "$2"; }
+
+echo "rendering $HOME_URL  ($(wc -c < "$HOME_DOM") bytes of DOM)"
+
+check_home "bare URL lands on the dashboard" 'id="home-view" class="home-view"'
+check_home "home tab marked active"       'data-view="home"[^>]*class="tab active"|class="tab active"[^>]*data-view="home"'
+check_home "layout in wide mode"          'class="layout is-wide'
+check_home "editor collapsed with no note" 'class="layout is-wide is-wide-empty"'
+check_home "vault named in the title"     'id="home-vault"[^>]*>[^<]+<'
+check_home "clock painted"                'id="home-time"[^>]*>[0-9][0-9]:[0-9][0-9]<'
+check_home "greeting painted"             'id="home-greeting"[^>]*>(Good morning|Good afternoon|Good evening|Still up)<'
+check_home "long date painted"            'id="home-date"[^>]*>[A-Z][a-z]+ [0-9]+ [A-Z][a-z]+<'
+check_home "month label filled"           'id="home-month"[^>]*>[A-Z][a-z]+ [0-9]{4}<'
+check_home "mini calendar weekdays"       'class="mini-cal-head"'
+check_home "mini calendar days"           'class="mini-cal-day'
+check_home "today ringed in the grid"     'class="mini-cal-day[^"]*is-today'
+check_home "mood streak painted"          'id="home-streak"[^>]*>[0-9]+<'
+check_home "today line painted"           'id="home-today-line"[^>]*>[^<]+<'
+check_home "today action labelled"        'id="home-today-action"[^>]*>[^<]+<'
+check_home "entry actions offered"        'data-entry="task"'
+check_home "view jumps offered"           'data-jump="collections"'
+check_home "stats card describes the vault" 'id="home-stats"'
+# Four vault tiles plus four board tiles; the two containers hold the same class.
+check_count "$HOME_DOM" "eight tiles across two cards" 'class="h-tile"' 8
+check_home_absent "clock not left as a placeholder" 'id="home-time"[^>]*>—<'
+check_home_absent "dashboard not left hidden"       'id="home-view" class="home-view hidden"'
 
 echo
 echo "pass=$pass fail=$fail"
