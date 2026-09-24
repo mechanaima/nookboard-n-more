@@ -16,7 +16,7 @@ from typing import Iterable
 
 import sqlite3
 
-from .models import Note, Signifier, Status
+from .models import Note, Signifier, Status, is_daily_note_id
 from .obsidian import wikilink_targets
 
 
@@ -242,6 +242,11 @@ class Database:
         ).fetchall()
         for row in rows:
             real = self._row_to_note(row)
+            if is_daily_note_id(real.id):
+                # The app already writes one note per day. Instantiating a daily
+                # note as if it were a recurrence parent manufactures
+                # `daily-<day>-<next-day>` beside it, one more every day.
+                continue
             last_run = date.fromisoformat(row["last_run"])
             if not real.recurrence:
                 continue

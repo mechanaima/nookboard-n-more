@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from app import daily
 from app.config import Settings
+from app.db import Database
 from app.main import create_app
 from app.models import Note, Signifier, Status
 
@@ -287,6 +288,28 @@ def test_note_for_is_dated_on_the_day_it_covers():
     assert note.collection == "daily"
 
 
+def test_a_daily_note_is_not_counted_as_work():
+    """A day's note is a container, not something you did.
+
+    Marking it done is a natural thing to do -- it *is* a note you finish -- and
+    without this the recap lists the page you are reading as one of the day's
+    accomplishments, then keeps doing it.
+    """
+    dailynote = Note(
+        id=daily.daily_note_id(TODAY),
+        collection="daily",
+        title=TODAY.isoformat(),
+        body="",
+        signifier=Signifier.NOTE,
+        status=Status.COMPLETE,
+        dates=[TODAY],
+        completed=TODAY,
+    )
+    notes = [dailynote, _note("a", "Real work", completed=TODAY)]
+    assert [n.title for n in daily.completed_on(notes, TODAY)] == ["Real work"]
+
+
+
 # --- the completion date -------------------------------------------------
 
 def test_completing_a_task_stamps_the_day(make_client):
@@ -447,6 +470,49 @@ def test_rerunning_keeps_what_the_person_wrote_in_the_note(make_client):
     assert "Second pass." in after
     assert "First pass." not in after
     assert after.count(daily.MARK_START) == 1
+
+
+def test_a_daily_note_is_not_a_recurrence_parent(tmp_path):
+    """Making a daily note recur must not manufacture junk notes.
+
+    `daily-2026-09-23` with `recurrence: daily` is read as a parent, so the next
+    instance is named `daily-2026-09-23-2026-09-24` and lands beside it -- one
+    more every day, forever. The app already makes a note per day, so the only
+    correct number of instances is none.
+    """
+    db = Database(tmp_path / ".index.sqlite")
+    dailynote = Note(
+        id=daily.daily_note_id(TODAY),
+        collection="daily",
+        title=TODAY.isoformat(),
+        body="",
+        signifier=Signifier.NOTE,
+        status=Status.COMPLETE,
+        dates=[TODAY],
+        completed=TODAY,
+        recurrence="daily",
+    )
+    db.upsert(dailynote)
+    assert db.run_recurring(TODAY + timedelta(days=1)) == []
+    assert db.run_recurring(TODAY + timedelta(days=5)) == []
+
+
+def test_a_normal_recurring_note_still_instantiates(tmp_path):
+    """The guard must be about daily notes, not about recurrence."""
+    db = Database(tmp_path / ".index.sqlite")
+    real = Note(
+        id="water-plants",
+        collection="inbox",
+        title="Water the plants",
+        body="",
+        signifier=Signifier.TASK,
+        status=Status.OPEN,
+        dates=[TODAY],
+        recurrence="daily",
+    )
+    db.upsert(real)
+    made = db.run_recurring(TODAY + timedelta(days=1))
+    assert [n.id for n in made] == [f"water-plants-{(TODAY + timedelta(days=1)).isoformat()}"]
 
 
 def test_a_summarised_day_is_not_summarised_again(make_client):

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from .models import Note, Signifier, Status
+from .models import Note, Signifier, Status, is_daily_note_id
 
 #: HTML comments so the fences never render in Obsidian or in the app.
 MARK_START = "<!-- nookboard:daily:start -->"
@@ -37,7 +37,14 @@ def completed_on(notes: list[Note], day: date) -> list[Note]:
     but was abandoned rather than finished, and a summary of the day's work that
     counts abandoned things is worse than no summary.
     """
-    done = [n for n in notes if n.status is Status.COMPLETE and n.completed == day]
+    done = [
+        n
+        for n in notes
+        if n.status is Status.COMPLETE
+        and n.completed == day
+        # A day's own note is not an accomplishment of that day.
+        and not is_daily_note_id(n.id)
+    ]
     return sorted(done, key=lambda n: (n.title or "").lower())
 
 

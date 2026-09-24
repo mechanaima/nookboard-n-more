@@ -438,7 +438,7 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 282 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 285 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),

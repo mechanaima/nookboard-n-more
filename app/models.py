@@ -16,6 +16,8 @@ from datetime import date
 from enum import Enum
 from typing import Optional
 
+import re
+
 import frontmatter
 
 from .obsidian import extract_inline_tags, split_frontmatter_tags
@@ -63,6 +65,27 @@ STAGE_LABELS = {
     Stage.REVIEW: "Review",
     Stage.DONE: "Done",
 }
+
+
+#: Ids the daily-summary feature generates: `daily-YYYY-MM-DD`.
+DAILY_ID_RE = re.compile(r"^daily-\d{4}-\d{2}-\d{2}$")
+
+
+def is_daily_note_id(note_id: Optional[str]) -> bool:
+    """Whether an id belongs to a generated daily note.
+
+    A daily note is a container the app writes, not a note you author, and two
+    rules hang off that fact:
+
+    - It is never counted as a day's finished work. Marking one done is natural
+      (it *is* a note you finish), but the recap would then list the page you are
+      reading as one of the day's accomplishments.
+    - It is never treated as a recurrence parent. Making one recur daily reads as
+      a parent, so the next instance is named `daily-2026-09-23-2026-09-24` and
+      collects beside it -- one more every day, forever. The app already writes a
+      note per day, so the only correct number of instances is none.
+    """
+    return bool(DAILY_ID_RE.match(str(note_id or "")))
 
 
 def stage_for_status(status: Status) -> Stage:
