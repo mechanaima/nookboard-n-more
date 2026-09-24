@@ -18,6 +18,7 @@ from __future__ import annotations
 from urllib.parse import urlsplit
 
 from .models import Note
+from .note_icons import icon_problem
 
 #: Only these can be a link. A note is the person's own file and may say anything, so
 #: an unusable url is *reported* rather than refused when it is saved -- losing the
@@ -84,6 +85,11 @@ def _item(note: Note, url: str) -> dict:
         "id": note.id,
         "title": note.title,
         "url": url,
+        # The icon the card draws, and whether one can be drawn for it at all. A name
+        # nothing can draw is reported the way an address a browser cannot open is --
+        # kept, shown, and said out loud rather than quietly dropped.
+        "icon": note.icon,
+        "icon_problem": icon_problem(note.icon),
         "host": host_of(url),
         "problem": url_problem(url),
         "tags": list(note.tags),

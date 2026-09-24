@@ -13,6 +13,10 @@ import {
 import {
   countLine, emptyHint, statusTitle, statusWord,
 } from "./bookmarks.js";
+import {
+  COUNT as ICON_COUNT, draw as drawIcon, filter as filterIcons, has as hasIcon,
+  labelFor as iconLabel, iconTitle,
+} from "./icons.js";
 import { weekKey } from "./week.js";
 import {
   BOARD_TILES, clockTime, greeting, longDate, statTiles, todayAction, todayLine,
@@ -377,10 +381,22 @@ function buildEntry(note, opts = {}) {
   if (opts.animate) li.style.setProperty("--i", String(opts.index ?? 0));
   if (note.id === state.activeId) li.classList.add("is-active");
 
+  // The mark at the start of a row is one mark, not two: a note with an icon shows
+  // the icon there, and a note without one (or with a name nothing can draw) keeps
+  // the signifier's own glyph. A name that draws nothing is never a blank space --
+  // the tooltip says which name it was and that Lucide does not have it.
   const glyph = document.createElement("i");
   glyph.className = "glyph";
-  glyph.setAttribute("aria-hidden", "true");
-  glyph.textContent = opts.glyph ?? signifierGlyph(note.signifier);
+  const icon = note.icon ? drawIcon(note.icon, { size: "1.05em" }) : null;
+  if (icon) {
+    glyph.classList.add("glyph--icon");
+    glyph.appendChild(icon);
+    glyph.title = iconTitle(note.icon);
+  } else {
+    glyph.setAttribute("aria-hidden", "true");
+    glyph.textContent = opts.glyph ?? signifierGlyph(note.signifier);
+    if (note.icon) glyph.title = iconTitle(note.icon);
+  }
   li.appendChild(glyph);
 
   const main = document.createElement("div");
@@ -562,6 +578,8 @@ function renderEditor() {
   $("#note-path").value = n.path || "";
   $("#note-url").value = n.url || "";
   renderUrlHint();
+  $("#note-icon").value = n.icon || "";
+  renderIconHint();
   renderWorkspacePanel();
   renderHistoryPanel();
   state.activeTags = (n.tags || []).slice();
@@ -831,6 +849,7 @@ async function saveEditor() {
       // An address, or nothing. Not validated here: whether a browser can open it
       // is the server's answer, and the view has room for the reason.
       url: $("#note-url").value.trim() || null,
+      icon: $("#note-icon").value.trim() || null,
       tags,
       mood: state.activeMood || null,
       // Explicit null when unset, so clearing a reading actually clears it
@@ -1155,6 +1174,16 @@ function buildCard(card, stage) {
   if (stage === "done") li.classList.add("is-done");
   if (card.id === state.activeId) li.classList.add("is-active");
   li.draggable = true;
+
+  // Same rule as a row: the icon leads the card, and the title follows it.
+  const icon = card.icon ? drawIcon(card.icon, { size: "1em" }) : null;
+  if (icon) {
+    const box = document.createElement("span");
+    box.className = "card__icon";
+    box.title = iconTitle(card.icon);
+    box.appendChild(icon);
+    li.appendChild(box);
+  }
 
   const title = document.createElement("p");
   title.className = "card__title" + (card.title ? "" : " card__title--empty");
@@ -2790,7 +2819,15 @@ function bookmarkCard(item) {
 
   const title = document.createElement("span");
   title.className = "bookmark__title";
-  title.textContent = item.title;
+  const icon = item.icon ? drawIcon(item.icon, { size: "1em" }) : null;
+  if (icon) {
+    const mark = document.createElement("span");
+    mark.className = "bookmark__icon";
+    mark.title = item.icon_problem || iconTitle(item.icon);
+    mark.appendChild(icon);
+    title.prepend(mark);
+  }
+  title.append(document.createTextNode(item.title));
   card.append(title);
 
   // The chip is filled in by `paintStatuses` once a check answers. It starts as
@@ -2908,6 +2945,66 @@ function renderUrlHint() {
     : saved
       ? "saved as empty — save to stop counting this as a bookmark"
       : "an address here makes this note a bookmark";
+}
+
+//: Says what the icon row does, and -- because the whole icon set is in the browser
+//: -- whether the name is one that can actually be drawn. That verdict is the same
+//: one `app/note_icons.py` gives on the server; both read a generated list, and a test
+//: asserts the two lists are identical, so there is no name one of them knows and the
+//: other does not.
+function renderIconHint() {
+  const hint = $("#note-icon-hint");
+  if (!hint) return;
+  const name = $("#note-icon").value.trim();
+  const preview = $("#note-icon-preview");
+  preview.replaceChildren();
+  if (!name) {
+    hint.textContent = `${ICON_COUNT} Lucide icons — an icon here is drawn beside this note wherever it is shown as a card`;
+  } else if (hasIcon(name)) {
+    const drawn = drawIcon(name, { size: "1.1em" });
+    if (drawn) preview.appendChild(drawn);
+    hint.textContent = `${iconLabel(name)} — saved on this note, drawn from the vendored set`;
+  } else {
+    // Kept, not refused: a note is the person's file. The row says so and the note
+    // still saves -- the same call the app makes about an address it cannot open.
+    hint.textContent = `\u201c${name}\u201d is not a Lucide icon — it will be saved, and nothing can be drawn for it. Try Browse…`;
+  }
+}
+
+//: Draws the picker's grid for whatever is in the search box. Only the matches are
+//: built, and only up to `LIMIT` of them, because two thousand icons is not a list
+//: anybody scrolls -- the count beside the box says how many matched, so a short grid
+//: never quietly looks like the whole set.
+function renderIconGrid(query) {
+  const { names, total, shown } = filterIcons(query);
+  const grid = $("#icon-grid");
+  const chosen = $("#note-icon").value.trim();
+  grid.replaceChildren(...names.map((name) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", String(name === chosen));
+    button.title = iconLabel(name);
+    const svg = drawIcon(name, { size: "18" });
+    if (svg) button.appendChild(svg);
+    button.addEventListener("click", () => {
+      $("#note-icon").value = name;
+      renderIconHint();
+      renderIconGrid($("#icon-search").value);
+    });
+    return button;
+  }));
+  $("#icon-picker-count").textContent = total
+    ? `${shown} of ${total} match${total === 1 ? "" : "es"}`
+    : "nothing matches";
+}
+
+function setIconPicker(open) {
+  const picker = $("#icon-picker");
+  picker.classList.toggle("hidden", !open);
+  if (!open) return;
+  renderIconGrid($("#icon-search").value);
+  $("#icon-search").focus();
 }
 
 // ---- history ---------------------------------------------------------------
@@ -3460,6 +3557,17 @@ window.addEventListener("DOMContentLoaded", async () => {
   // below it shows what the folder *is* -- one read, at the moment you look.
   $("#note-path").addEventListener("input", renderWorkspacePanel);
   $("#note-url").addEventListener("input", renderUrlHint);
+  $("#note-icon").addEventListener("input", renderIconHint);
+  $("#note-icon-browse").addEventListener("click", () => {
+    setIconPicker($("#icon-picker").classList.contains("hidden"));
+  });
+  $("#icon-picker-close").addEventListener("click", () => setIconPicker(false));
+  $("#icon-search").addEventListener("input", () => renderIconGrid($("#icon-search").value));
+  $("#note-icon-clear").addEventListener("click", () => {
+    $("#note-icon").value = "";
+    renderIconHint();
+    renderIconGrid($("#icon-search").value);
+  });
   $("#note-url-clear").addEventListener("click", () => {
     $("#note-url").value = "";
     renderUrlHint();

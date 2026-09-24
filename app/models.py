@@ -138,16 +138,46 @@ def is_template(note: "Note") -> bool:
     return getattr(note, "collection", None) == TEMPLATES_COLLECTION
 
 
+#: Collections whose notes are never work, whatever their ids look like.
+#:
+#: A `daily` note is a page you write on, a `weekly` one is a rollup of what you
+#: finished, a `bookmarks` note is an address, a `workspaces` note is a folder, and
+#: `testing` is a scratch pile. None of them is a thing to be *doing* -- but their
+#: notes carry ordinary ids, so the id rule below cannot see them, and the board
+#: filled with cards that could only be dismissed one at a time, forever. Named here
+#: so the board, the dashboard and an unnarrowed query leave out one set between them.
+NOT_WORK_COLLECTIONS = frozenset({"daily", "weekly", "bookmarks", "testing", "workspaces"})
+
+
+def not_work_reason(note: "Note") -> str | None:
+    """Why this note is not work -- `template`, `generated`, `collection` -- or None.
+
+    One reason per note, deliberately: a template that also lives in `daily` is held
+    back for being a template, and counting it twice would make the board's arithmetic
+    disagree with the board. The order is the order of the questions -- a shape, then
+    a record, then a place notes go.
+    """
+    if is_template(note):
+        return "template"
+    if is_generated_note_id(note.id):
+        return "generated"
+    if note.collection in NOT_WORK_COLLECTIONS:
+        return "collection"
+    return None
+
+
 def is_work(note: "Note") -> bool:
     """Whether a note is a thing to be doing, rather than a shape or a record.
 
-    A template is a shape for other notes and a period note is something the
-    program wrote, so neither is work. The board hides that set, the dashboard
-    counts it, and a query that was not narrowed to a collection leaves it out:
-    all three have to hide exactly the same thing, or the app contradicts
-    itself about what you have left to do.
+    A template is a shape for other notes, a period note is something the program
+    wrote, and a bookmark or a workspace is a note *about* something rather than a
+    thing to do -- so none of them is work. The board hides that set, the dashboard
+    counts it, and a query that was not narrowed to a collection leaves it out: all
+    three have to hide exactly the same thing, or the app contradicts itself about
+    what you have left to do. Which is why they all ask *this* function, and why the
+    board no longer spells the rule out for itself.
     """
-    return not is_template(note) and not is_generated_note_id(note.id)
+    return not_work_reason(note) is None
 
 
 def iso_week(day: date) -> str:
@@ -300,6 +330,12 @@ class Note:
     #: `app.bookmarks`' answer to give, not this model's to enforce. A typo must not
     #: cost you the note -- the same reasoning as an unreadable `at:`.
     url: Optional[str] = None
+    #: A Lucide icon name (`server`, `book-open`, `heart-pulse`), drawn beside the
+    #: note wherever a note is shown as a card. A name, not an image and not a
+    #: character: the drawings are vendored (`static/vendor/lucide.js`), so the file
+    #: stays portable text and the icon still renders with no network. An unknown
+    #: name is kept and reported rather than refused -- a note is the person's file.
+    icon: Optional[str] = None
     parent_id: Optional[str] = None
     created: date = field(default_factory=date.today)
     mood: Optional[str] = None
@@ -347,6 +383,7 @@ class Note:
             "until": parse_time(self.until),
             "path": self.path,
             "url": self.url,
+            "icon": self.icon,
             "parent_id": self.parent_id,
             "created": self.created.isoformat(),
             "mood": self.mood,
@@ -414,6 +451,10 @@ class Note:
         # how you get a link that silently is not one.
         url = meta.get("url")
         url = str(url) if url is not None else None
+        # And again: `icon: 7` (a name that is only digits) arrives as an int, and an
+        # icon name has to stay the text the person wrote or nothing can look it up.
+        icon = meta.get("icon")
+        icon = str(icon) if icon is not None else None
 
         try:
             created = date.fromisoformat(str(meta["created"])) if meta.get("created") else date.today()
@@ -460,6 +501,7 @@ class Note:
             until=until,
             path=path,
             url=url,
+            icon=icon,
             parent_id=meta.get("parent_id"),
             created=created,
             mood=meta.get("mood"),
@@ -492,6 +534,10 @@ class Note:
         # The address as written. Whether a browser can open it, and what group it
         # belongs to, is `app.bookmarks`' answer.
         d["url"] = self.url
+        # The icon name as written. Whether it names something Lucide can draw is
+        # `app.note_icons`' answer, and the browser holds the same generated set, so
+        # the two cannot disagree about it.
+        d["icon"] = self.icon
         d["time_label"] = schedule_label(self)
         d["created"] = self.created.isoformat()
         # asdict() leaves these as date objects, which are not JSON.

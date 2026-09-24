@@ -13,6 +13,7 @@
                                              20. workspaces
                                              21. history (the vault's past)
                                              22. bookmarks (where things are)
+                                             23. note icons (a mark on a note)
                                              15. responsive (last, on purpose)
    The glass: one --wall on body, and every panel samples it through the glass
    tokens in section 1. Read the notes there before moving the wall.
@@ -3236,3 +3237,46 @@ textarea { resize: vertical; line-height: 1.6; }
 .bookmark--bad { border-style: dashed; }
 .bookmark--bad .bookmark__title { color: var(--fg-dim); }
 .bookmark__problem { font-size: 12px; color: var(--yellow); overflow-wrap: anywhere; }
+
+/* 23. note icons ------------------------------------------------------------ */
+/* A note's Lucide icon, wherever a note is drawn. `currentColor` is the whole trick:
+   the icon is stroke-only, so it takes the colour of whatever it sits in -- including
+   the colour a card turns when it is blocked, done or active. */
+
+.note-icon { display: block; }
+.icon-preview { display: inline-flex; width: 18px; justify-content: center; color: var(--fg-dim); }
+.icon-preview:empty { visibility: hidden; }
+
+/* The row glyph slot: a note with an icon shows it where the signifier's own glyph
+   would go, so a row keeps one mark rather than two. */
+.glyph--icon { display: inline-flex; align-items: center; justify-content: center; }
+.glyph--icon .note-icon { width: 1.05em; height: 1.05em; }
+.entry.status-complete .glyph, .card.is-done .card__icon { color: var(--green); }
+.card__icon { display: inline-flex; margin-right: 6px; color: var(--fg-dim); vertical-align: -0.1em; }
+
+.icon-picker {
+  margin-top: 8px; padding: 10px;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: var(--surface0);
+}
+.icon-picker.hidden { display: none; }
+.icon-picker__head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.icon-picker__search { flex: 1; min-width: 0; }
+.icon-picker__count {
+  font-family: var(--font-mono); font-size: 11px; color: var(--fg-faint); white-space: nowrap;
+}
+/* Tall and scrolling: this is the one panel that can hold hundreds of things. */
+.icon-picker__grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
+  gap: 4px; max-height: 220px; overflow-y: auto;
+}
+.icon-picker__grid button {
+  display: flex; align-items: center; justify-content: center;
+  aspect-ratio: 1; padding: 0; cursor: pointer;
+  border: 1px solid transparent; border-radius: 8px;
+  background: none; color: var(--fg-dim);
+}
+.icon-picker__grid button:hover, .icon-picker__grid button:focus-visible {
+  border-color: var(--pink); color: var(--fg); background: var(--surface1);
+}
+.icon-picker__grid button[aria-selected="true"] { color: var(--teal); border-color: var(--teal); }

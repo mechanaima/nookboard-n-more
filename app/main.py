@@ -24,7 +24,7 @@ from .deps import (
 )
 from .models import (
     MOOD_LEVELS, PAIN_MAX, PAIN_MIN, STAGE_LABELS, Note, Signifier, Stage, Status,
-    coerce_pain, is_generated_note_id, reconcile, stage_for_status, stamp_completed,
+    coerce_pain, not_work_reason, reconcile, stage_for_status, stamp_completed,
 )
 from . import bookmarks
 from . import health
@@ -66,6 +66,8 @@ class NoteIn(BaseModel):
     path: Optional[str] = None
     #: An address this note is about. A note that has one is a bookmark.
     url: Optional[str] = None
+    #: A Lucide icon name, drawn beside the note wherever it is shown as a card.
+    icon: Optional[str] = None
     parent_id: Optional[str] = None
     mood: Optional[str] = None
     pain: Optional[int] = None
@@ -439,6 +441,21 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         text = value.strip()
         return text or None
 
+    def _coerce_icon(value: object) -> Optional[str]:
+        """The icon a note shows, or a refusal.
+
+        Stored as typed, and an unknown name is *kept*: a note is the person's own
+        file, and `icon: serverr` is a typo in their handwriting, not a reason to
+        lose the line. `app.note_icons` says whether a name is one Lucide can draw,
+        and the view draws the fallback for the ones that are not.
+        """
+        if value is None or value == "":
+            return None
+        if not isinstance(value, str):
+            raise HTTPException(400, "icon must be a string (a Lucide icon name, or null)")
+        text = value.strip()
+        return text or None
+
     def _coerce_url(value: object) -> Optional[str]:
         """The address a note points at, or a refusal.
 
@@ -510,6 +527,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             until=_coerce_time(payload.until, "until"),
             path=_coerce_path(payload.path),
             url=_coerce_url(payload.url),
+            icon=_coerce_icon(payload.icon),
             parent_id=payload.parent_id,
             mood=payload.mood,
             pain=coerce_pain(payload.pain),
@@ -557,6 +575,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             title=payload.get("title", existing.title),
             body=payload.get("body", existing.body),
             url=_coerce_url(payload.get("url", existing.url)),
+            icon=_coerce_icon(payload.get("icon", existing.icon)),
             signifier=_coerce_enum(
                 Signifier, payload.get("signifier", existing.signifier.value), "signifier"
             ),
@@ -859,18 +878,25 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             notes = [n for n in notes if n.collection == collection]
         if tag:
             notes = [n for n in notes if tag in n.tags]
-        # Both kinds of generated container are kept off the board: a period
-        # note is a record of work, not a piece of it. Templates are kept off it
-        # too -- a shape for notes is not a thing to be doing, and a folder of
-        # them would otherwise drop one card per template into To-do to be
-        # dismissed by hand. Both counts are reported so the board never quietly
-        # looks smaller than the vault.
-        hidden_generated = sum(1 for n in notes if is_generated_note_id(n.id))
-        hidden_templates = sum(1 for n in notes if templates.is_template(n))
-        notes = [
-            n for n in notes
-            if not is_generated_note_id(n.id) and not templates.is_template(n)
-        ]
+        # What is kept off the board is `models.not_work_reason`'s answer -- one
+        # predicate, shared with the dashboard and an unnarrowed query, so the three
+        # cannot disagree about what is left to do. This endpoint used to spell the
+        # rule out for itself (generated ids and templates) and therefore missed the
+        # notes in `daily`, `weekly`, `bookmarks`, `workspaces` and `testing`, whose
+        # ids look like any other note's.
+        #
+        # The reasons are counted as a partition, so they add up to the number held
+        # back rather than to something larger, and they are *reported* rather than
+        # hidden: a board must never quietly look smaller than the vault it describes.
+        hidden = {"template": 0, "generated": 0, "collection": 0}
+        kept = []
+        for note in notes:
+            reason = not_work_reason(note)
+            if reason is None:
+                kept.append(note)
+            else:
+                hidden[reason] += 1
+        notes = kept
 
         columns = []
         for stage in STAGE_ORDER:
@@ -887,8 +913,12 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             "columns": columns,
             "summary": board_summary(notes, by_id),
             "blocked": [_card(n, by_id) for n in stuck],
-            "hidden_generated": hidden_generated,
-            "hidden_templates": hidden_templates,
+            "hidden_generated": hidden["generated"],
+            "hidden_templates": hidden["template"],
+            # New reasons, and the total, so the counts can be checked against each
+            # other by anyone reading the JSON rather than only by the app.
+            "hidden_collections": hidden["collection"],
+            "hidden_total": sum(hidden.values()),
         }
 
     @app.post("/api/board/move")
@@ -1608,6 +1638,30 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
 
     # Static front-end
     static_dir = Path(__file__).resolve().parent.parent / "static"
+    @app.middleware("http")
+    async def _never_cache(request, call_next):
+        """No response from this app is a thing to keep.
+
+        There is no asset versioning here to key a cache on -- `app.js` has the same
+        URL after every change -- and this app is served from one machine to one
+        person, so a cached copy can only ever be a copy of something that has since
+        been fixed. Twice now that has been the whole of a bug report:
+
+        - a stale `app.js` after the history-rendering fix, where the doubling only
+          went away after a hard reload;
+        - a stale `static/vendor/lucide.js`, which kept drawing the icon set from
+          before the generator was fixed -- the icons looked clipped in a tab whose
+          neighbour, opened cold, drew them correctly.
+
+        An earlier version of this middleware was written on a theory that turned out
+        to be wrong (a caching explanation for a discrepancy the person had caused by
+        editing a note themselves) and was removed for that reason. This one is not a
+        theory: both incidents are reproducible by loading a cold profile and comparing.
+        """
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.get("/")

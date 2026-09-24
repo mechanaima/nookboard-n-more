@@ -511,7 +511,7 @@ BK_TAG="render-check-bookmarks"
 BK_OK="render-check-bk-ok"
 BK_BAD="render-check-bk-bad"
 curl -s -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/json' \
-  -d "{\"id\":\"$BK_OK\",\"collection\":\"bookmarks\",\"title\":\"The vault itself\",\"signifier\":\"note\",\"status\":\"open\",\"url\":\"http://127.0.0.1:8765\",\"tags\":[\"$BK_TAG\"]}"
+  -d "{\"id\":\"$BK_OK\",\"collection\":\"bookmarks\",\"title\":\"The vault itself\",\"signifier\":\"note\",\"status\":\"open\",\"url\":\"http://127.0.0.1:8765\",\"icon\":\"server\",\"tags\":[\"$BK_TAG\"]}"
 curl -s -o /dev/null -X POST "$BASE/api/notes" -H 'content-type: application/json' \
   -d "{\"id\":\"$BK_BAD\",\"collection\":\"bookmarks\",\"title\":\"A typo\",\"signifier\":\"note\",\"status\":\"open\",\"url\":\"127.0.0.1:8765\",\"tags\":[\"$BK_TAG\"]}"
 
@@ -540,6 +540,9 @@ check_bk "an address that cannot be opened is shown, not dropped" 'class="bookma
 check_bk "the reason is a sentence, not a code" 'class="bookmark__problem">[^<]*https://'
 check_bk_absent "a card that cannot be opened is not made a link" 'bookmark--bad" href='
 check_bk "the address row is in the editor" "id=\"note-url\""
+check_bk "the icon row is in the editor"   "id=\"note-icon\""
+# The icon the fixture's note carries, drawn inside the card's title.
+check_bk "the notes icon is drawn on its card" 'class="bookmark__icon" title="server"><svg[^>]*class="note-icon"' 
 # The status chips are the one thing here that waits on a network answer, so this is
 # the one place the harness has to give the page time: the fixtures point at the app
 # itself, so a check that lands says `up`, and one that never lands leaves the chips

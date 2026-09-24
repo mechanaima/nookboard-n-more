@@ -103,7 +103,7 @@ Design decisions worth knowing before you edit it:
 The UI is checked headlessly, not by eyeball alone:
 
 ```bash
-./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 178 DOM assertions
+./tools/check_render.sh 'http://127.0.0.1:8765/#/note/<id>'   # 180 DOM assertions
 ./tools/shot.sh /tmp/shot.png 'http://127.0.0.1:8765/'        # screenshot
 ./tools/contrast.sh 'http://127.0.0.1:8765/#/view/board' .card__chip
 ```
@@ -185,6 +185,10 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
 - **History** — the whole vault under git, in the vault, off until you ask for
   it: versions for every note, a button to write an old one back, and a list of
   notes you deleted and can still bring back (see [History](#history))
+- **Icons** — give a note a Lucide icon (`icon: server`) and it is drawn beside
+  the note wherever the note is shown: board cards, lists, bookmarks. A name, not an
+  image — the file stays portable text and the icon still draws with no network (see
+  [Icons](#icons))
 - **Bookmarks** — put an address on a note (`url:`) and the vault keeps your
   services the way it keeps everything else: as markdown you can grep, group by
   tag, and back up. Opening the view asks each address whether it is answering and
@@ -231,6 +235,24 @@ read by the same parser.
 
 The **Board** tab is a kanban over the same notes as everything else — not a
 separate database. A card *is* a note; moving it edits the Markdown.
+
+**What is not on the board.** Five collections are note *material* rather than work,
+and never appear as cards: `daily`, `weekly`, `bookmarks`, `workspaces` and
+`testing`. Neither are templates (a shape for notes is not a thing to be doing) or
+the period notes the app writes itself. Without this, a board fills with cards that
+can only be dismissed by hand, forever.
+
+The rule lives in exactly one place — `models.not_work_reason` — because the board,
+the Home dashboard and an unnarrowed query all have to hide *the same* set, or the
+app contradicts itself about what you have left to do. The response reports what it
+held back, and *why*, as a partition that adds up:
+
+```json
+{"hidden_collections": 12, "hidden_generated": 2, "hidden_templates": 2, "hidden_total": 16}
+```
+
+so a board never quietly looks smaller than the vault it describes. Asking for one of
+those collections by name (`in bookmarks`) is a deliberate act and is answered.
 
 Columns are Backlog → To do → Doing → Review → Done. Drag a card, or use the
 **‹ ›** buttons on it (a drag is fine-motor work and invisible to a keyboard, so
@@ -691,6 +713,43 @@ It is a **user** timer, not a system service: no root, and it reads the same vau
 the app does. Re-run the installer after moving the checkout — it rewrites the
 paths rather than making you hand-edit unit files.
 
+## Icons
+
+A note with an `icon:` shows it. The name is a [Lucide](https://lucide.dev) icon
+name — `server`, `book-open`, `heart-pulse` — and the drawing is vendored, so the
+note stays portable markdown and the icon renders with no network, no sprite sheet
+and no image files in the vault.
+
+```yaml
+icon: brain
+```
+
+| where a note appears | what you see |
+|---|---|
+| board card | the icon leading the card, before the title |
+| list row (timeline, rapid log, search) | the icon takes the glyph's place, so a row keeps **one** mark, not two |
+| bookmark card | the icon inside the title's line |
+| editor | the row itself, a live preview, and *Browse…* for the picker |
+
+**The picker searches, because two thousand icons is not a list.** *Browse…* opens a
+grid that matches as you type, ranked so `serv` offers `server` before
+`cloud-server-2`, and draws at most 120 of them — the count beside the search box
+says how many matched, so a short grid never quietly looks like the whole set.
+
+**Two files hold the icon set, and both are generated.** `static/vendor/lucide.js`
+(the drawings) and `app/icons.py` (the names) come from one npm tarball, by
+`uv run tools/build-lucide.py <version>` — currently **Lucide 1.48.0, 2118 icons**,
+ISC licensed, with the copyright notice in the generated file's header. Neither is
+edited by hand, and `tests/test_icons.py` asserts they agree: a name the picker
+offers that the server does not recognise would be a note whose icon silently does
+not draw, so that is a test rather than a promise.
+
+**An unknown name is kept and reported, not refused** — `icon: serverr` saves, the
+API says it is not a Lucide icon, and the row falls back to the signifier's own
+glyph with the reason in the tooltip. A note is the person's own file, and losing a
+line of it over a typo is the worse failure: the same call this app makes about an
+address a browser cannot open.
+
 ## Bookmarks
 
 A note with a `url:` is a bookmark. That is the whole rule — no marker tag, no
@@ -1112,7 +1171,7 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 768 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 805 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),
@@ -1135,7 +1194,7 @@ make test        # 768 pytest — model, vault, obsidian, foreign-vault, db, api
                  #              the parent a deleted note is restored from, what
                  #              a path may be, and a real repository for the rest:
                  #              moves, restores, checkpoints, unrecorded work)
-make test-js     # 178 node:test — rapid-log parsing, calendar maths, wikilinks,
+make test-js     # 186 node:test — rapid-log parsing, calendar maths, wikilinks,
                  #              ISO week labels, display helpers, board helpers,
                  #              mood grid helpers, query fences (finding them,
                  #              splicing answers, leaving other languages alone),
@@ -1148,7 +1207,7 @@ make test-js     # 178 node:test — rapid-log parsing, calendar maths, wikilink
                  #              distance for older, a restore that says what it
                  #              will write), and that every local import exists
 make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
-./tools/check_render.sh   # 178 DOM assertions in headless Chromium
+./tools/check_render.sh   # 180 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether

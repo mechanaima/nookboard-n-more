@@ -555,6 +555,35 @@
             </div>
             <p id="note-url-hint" class="field-hint"></p>
           </div>
+          <div class="field field--wide">
+            <span class="field-label">icon</span>
+            <div class="path-row">
+              <span id="note-icon-preview" class="icon-preview" aria-hidden="true"></span>
+              <input id="note-icon" class="path-row__field" type="text"
+                     placeholder="server"
+                     spellcheck="false" autocomplete="off"
+                     aria-label="a Lucide icon name"
+                     title="a Lucide icon name — drawn beside this note wherever it is shown as a card">
+              <button id="note-icon-browse" class="btn btn--ghost btn--small" type="button"
+                      title="search every icon">Browse…</button>
+              <button id="note-icon-clear" class="time-row__clear" type="button"
+                      aria-label="remove the icon" title="remove the icon">✕</button>
+            </div>
+            <p id="note-icon-hint" class="field-hint"></p>
+            <!-- The picker: two thousand icons is not a list to scroll, so it opens on
+                 a search and draws only what matched. -->
+            <div id="icon-picker" class="icon-picker hidden">
+              <div class="icon-picker__head">
+                <input id="icon-search" class="icon-picker__search" type="search"
+                       placeholder="search icons" spellcheck="false" autocomplete="off"
+                       aria-label="search Lucide icons">
+                <span id="icon-picker-count" class="icon-picker__count" aria-live="polite"></span>
+                <button id="icon-picker-close" class="btn btn--ghost btn--small" type="button">Close</button>
+              </div>
+              <div id="icon-grid" class="icon-picker__grid" role="listbox"
+                   aria-label="Lucide icons"></div>
+            </div>
+          </div>
           <div class="field field--wide" id="workspace-panel-field" hidden>
             <span class="field-label">workspace</span>
             <div id="workspace-panel" class="workspace-panel"></div>
