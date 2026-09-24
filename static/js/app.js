@@ -817,6 +817,12 @@ async function openEditor(id) {
   await renderBacklinks();
   await renderDeps(id);
   moveInk();
+  // Opening a note changes where you are, so the address has to say so. `render()` does
+  // this and this path never called it, so every way into a note that is not a full
+  // render -- a sidebar row, a board card, a backlink, a wikilink -- left the hash
+  // naming the note you had just left, and a reload went back to it. `syncHash` keeps
+  // its own `state.ready` guard, so a deep link being followed at boot is not stomped.
+  syncHash();
 }
 
 //: Who links here, painted into a list. Two surfaces show backlinks -- the editor's
@@ -3828,19 +3834,28 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
-  // wikilink clicks in preview
-  $("#note-preview").addEventListener("click", async (e) => {
+  // A wikilink goes to the note it names, in whichever surface it was clicked.
+  //
+  // Two surfaces render a note -- the split pane and the reading dialog -- and this was
+  // bound to the pane alone, so a link that worked beside the editor did nothing at all
+  // in the dialog. `renderWikilinks` emits an anchor with no `href`, so there is nothing
+  // for the browser to follow: without this, the click is simply lost.
+  const followWikilink = async (e) => {
     const a = e.target.closest("a.wikilink");
     if (!a) return;
     e.preventDefault();
     const title = a.dataset.title;
     const n = state.notes.find((x) => x.title === title);
     if (n) {
+      // The dialog stays open and follows the link -- reading a note and then reading
+      // the note it points at is one act, not two.
       openEditor(n.id);
     } else if (confirm(`No note titled "${title}". Create it?`)) {
       await createFromWikilink(title);
     }
-  });
+  };
+  $("#note-preview").addEventListener("click", followWikilink);
+  $("#preview-modal-body").addEventListener("click", followWikilink);
 
   window.addEventListener("resize", moveInk);
   if (document.fonts?.ready) document.fonts.ready.then(moveInk);
