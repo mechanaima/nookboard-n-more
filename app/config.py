@@ -5,6 +5,9 @@ or a different llama.cpp server without edits.
 
   NOOKBOARD_VAULT           path to the Markdown vault  (default <repo>/vault)
   NOOKBOARD_LLM_URL         OpenAI-compatible base URL  (default llama.cpp :11440)
+  NOOKBOARD_WHISPER_CLI     whisper-cli to run (default: look in the usual places)
+  NOOKBOARD_WHISPER_MODELS  directory of ggml-*.bin models
+  NOOKBOARD_WHISPER_MODEL   model to use by default (default: small)
   NOOKBOARD_LLM_MODEL       model name to request
   NOOKBOARD_LLM_MAX_TOKENS  completion budget per call
   NOOKBOARD_LLM_TIMEOUT     seconds to wait for a completion
@@ -55,6 +58,16 @@ class Settings:
     llm_timeout: float
     #: Hour (0-23) the end-of-day summary runs, or -1 to switch the scheduler
     #: off entirely. One hour, not a cron expression: see daily.is_due.
+    # -- transcription ------------------------------------------------------
+    #: whisper.cpp's CLI. Empty means "look in the usual places" (see
+    #: `transcribe.CLI_CANDIDATES`); set it to pick one and have the app say so.
+    whisper_cli: str = ""
+    #: Directory holding `ggml-<name>.bin`. Empty derives it from the CLI's own
+    #: layout, which is where whisper.cpp puts them.
+    whisper_models: str = ""
+    #: Which model the UI offers first. `small` is the default because a lecture
+    #: is minutes of work either way and `medium` is three times the download.
+    whisper_model: str = "small"
     daily_summary_hour: int = 22
     #: Whether to also write a weekly review. Shares `daily_summary_hour` as its
     #: cutoff -- the same question ("has the period's cutoff passed?") and one
@@ -77,6 +90,9 @@ def load_settings() -> Settings:
         # roughly 1400 tokens, links has exceeded 2048 and needed more.
         llm_max_tokens=_env_int("NOOKBOARD_LLM_MAX_TOKENS", 4096),
         llm_timeout=_env_float("NOOKBOARD_LLM_TIMEOUT", 300.0),
+        whisper_cli=os.environ.get("NOOKBOARD_WHISPER_CLI", "").strip(),
+        whisper_models=os.environ.get("NOOKBOARD_WHISPER_MODELS", "").strip(),
+        whisper_model=os.environ.get("NOOKBOARD_WHISPER_MODEL", "small").strip() or "small",
         daily_summary_hour=_env_int("NOOKBOARD_DAILY_SUMMARY_HOUR", 22),
         weekly_summary=_env_bool("NOOKBOARD_WEEKLY_SUMMARY", True),
     )

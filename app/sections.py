@@ -21,6 +21,24 @@ def mark(scope: str, edge: str) -> str:
     return f"<!-- nookboard:{scope}:{edge} -->"
 
 
+def read(body: str, *, start: str, end: str) -> str | None:
+    """The text inside a fenced region, or None if the fence is not both there.
+
+    The inverse of `upsert`, and it lives here for the same reason: the fence
+    format is this module's to own, so a reader that spelled the markers itself
+    could drift from the writer. A half-deleted fence returns None rather than a
+    guess -- the caller can then treat the region as absent, which is true.
+    """
+    body = body or ""
+    opened = body.find(start)
+    if opened == -1:
+        return None
+    closed = body.find(end, opened + len(start))
+    if closed == -1:
+        return None
+    return body[opened + len(start) : closed].strip()
+
+
 def upsert(body: str, section: str, *, start: str, end: str) -> str:
     """Put `section` into `body`, replacing any previous generated section.
 

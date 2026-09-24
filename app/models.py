@@ -67,9 +67,11 @@ STAGE_LABELS = {
 }
 
 
-#: Ids the summary features generate: `daily-YYYY-MM-DD`, `weekly-YYYY-Www`.
+#: Ids this app generates: `daily-YYYY-MM-DD`, `weekly-YYYY-Www`, and
+#: `transcript-<day>-<slug>` (produced by `transcribe.note_id`).
 DAILY_ID_RE = re.compile(r"^daily-\d{4}-\d{2}-\d{2}$")
 WEEKLY_ID_RE = re.compile(r"^weekly-\d{4}-W\d{2}$")
+TRANSCRIPT_ID_RE = re.compile(r"^transcript-\d{4}-\d{2}-\d{2}-.+$")
 
 
 def is_daily_note_id(note_id: Optional[str]) -> bool:
@@ -94,6 +96,18 @@ def is_weekly_note_id(note_id: Optional[str]) -> bool:
     return bool(WEEKLY_ID_RE.match(str(note_id or "")))
 
 
+def is_transcript_note_id(note_id: Optional[str]) -> bool:
+    """Whether an id belongs to a note written from a recording.
+
+    A transcript is a record *of* something, not a thing to do, which is why it
+    belongs to the same set as the period notes even though it summarises no
+    period. Without this it is a plain note with no stage, so it lands in the
+    board's first column as an unplaced card and sits there until it is
+    dismissed -- a lecture a week would bury the board in a term.
+    """
+    return bool(TRANSCRIPT_ID_RE.match(str(note_id or "")))
+
+
 def is_generated_note_id(note_id: Optional[str]) -> bool:
     """Whether an id is a note this program writes rather than one you author.
 
@@ -102,7 +116,11 @@ def is_generated_note_id(note_id: Optional[str]) -> bool:
     never be read as a recurrence parent. One predicate so a new kind of
     generated note cannot be added on only some of those paths.
     """
-    return is_daily_note_id(note_id) or is_weekly_note_id(note_id)
+    return (
+        is_daily_note_id(note_id)
+        or is_weekly_note_id(note_id)
+        or is_transcript_note_id(note_id)
+    )
 
 
 #: The collection templates live in, here rather than in `templates.py` for the

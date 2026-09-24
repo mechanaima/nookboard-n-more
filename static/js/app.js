@@ -9,6 +9,10 @@ import {
 } from "./home.js";
 import { splitQueries, spliceQueries } from "./query.js";
 import {
+  durationText, elapsedText, engineWords, extensionFor, headline, micAvailable,
+  noteHref, percent, pickRecorderMime, recordingName, sourceLabel,
+} from "./transcribe.js";
+import {
   STAGES, blockedLabel, blocksLabel, completionWarning, depCandidates,
   dropBeforeId, isOpenTask, resolveTaskRef, shiftStage, stageIndex, summaryText,
 } from "./board.js";
@@ -63,6 +67,35 @@ const api = {
   async home(month) {
     const qs = month ? `?month=${encodeURIComponent(month)}` : "";
     return jsonOrThrow(await fetch(`/api/home${qs}`));
+  },
+
+  // -- transcription
+  async transcribe() { return jsonOrThrow(await fetch("/api/transcribe")); },
+  async transcribeStart(payload) {
+    return jsonOrThrow(await fetch("/api/transcribe", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(payload),
+    }));
+  },
+  // The body is the file itself, so the browser posts the blob it already has.
+  // Nothing has to take it apart and put it back together on the way.
+  async transcribeUpload(blob, { name, model, collection, summarize }) {
+    const qs = new URLSearchParams({
+      name, model, collection, summarize: String(Boolean(summarize)),
+    });
+    return jsonOrThrow(await fetch(`/api/transcribe/upload?${qs}`, {
+      method: "POST",
+      headers: { "Content-Type": blob.type || "application/octet-stream" },
+      body: blob,
+    }));
+  },
+  async transcribeResummarise(id) {
+    return jsonOrThrow(await fetch("/api/transcribe/summarize", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ id }),
+    }));
   },
 
   // Writing a day's note is the same request the daily scheduler makes: the
@@ -155,6 +188,10 @@ const state = {
   blockedOnly: false,
   draggingId: null,
   tasks: [],               // open tasks, for the dependency picker
+  // -- transcribe
+  transcribeStatus: null,  // last /api/transcribe payload
+  transcribeFile: null,    // a File picked in this tab, waiting to be uploaded
+  transcribeTimer: null,   // the poll while a job is running
   deps: null,              // dependency payload for the open note
   boardError: null,
   // -- mood
@@ -180,7 +217,7 @@ const SIDEBAR_VIEWS = ["rapid", "collections", "timeline", "calendar"];
 //: Views that need the full width and therefore trade away the sidebar: the
 //: board (five columns) and mood (a year of weeks). They keep the editor as a
 //: second column so a note can be read or fixed without leaving the view.
-const WIDE_VIEWS = ["home", "board", "mood"];
+const WIDE_VIEWS = ["home", "board", "mood", "transcribe"];
 
 function showView(name) {
   state.activeView = name;
@@ -197,6 +234,10 @@ function showView(name) {
   if (name === "home") renderHome();
   if (name === "board") renderBoard();
   if (name === "mood") renderMood();
+  if (name === "transcribe") renderTranscribe();
+  // Leaving the view with the microphone open would keep the light on, and there
+  // is no visible control left to stop it.
+  if (name !== "transcribe") stopRecording();
 }
 
 async function refresh() {
@@ -217,6 +258,7 @@ async function refresh() {
   // The dashboard is derived server-side too, and every number on it can move
   // when a note changes, so it is asked again rather than patched.
   if (state.activeView === "home") await renderHome();
+  if (state.activeView === "transcribe") await renderTranscribe();
 }
 
 // A wide view trades the sidebar for itself and keeps the editor alongside, so
@@ -2145,14 +2187,20 @@ function syncHash() {
   if (location.hash !== next) history.replaceState(null, "", next);
 }
 
-const VALID_VIEWS = [
-  "home", "rapid", "board", "mood", "collections", "timeline", "calendar",
-];
+//: The views the app has, asked of the tabs themselves.
+//:
+//: This was a hand-written list, and adding a view without adding it here is a
+//: trap: `transcribe` shipped as a tab whose deep link silently redirected home,
+//: because the markup and the allowlist are two places and only one of them was
+//: obviously "the list of views". The tabs are that list.
+function validViews() {
+  return $$(".tab[data-view]").map((tab) => tab.dataset.view);
+}
 
 function readHash() {
   const { view, note } = parseHash();
   return {
-    view: VALID_VIEWS.includes(view) ? view : "home",
+    view: validViews().includes(view) ? view : "home",
     note: note || null,
   };
 }
@@ -2260,6 +2308,245 @@ function paintHome() {
   button.dataset.kind = action.kind;
 }
 
+// -- transcription -----------------------------------------------------------
+//
+// The view is a form and a list. Every number in it is the server's: a job's
+// state, its progress, how long the source is. What the browser owns is the
+// microphone -- the bytes of a recording do not exist anywhere until you press
+// stop -- and the clock you read while waiting, which the server would render
+// stale.
+//
+// A job is minutes long, so the list polls rather than pretending to know. The
+// poll stops as soon as nothing is running: one that outlived its work would be
+// a request a second, forever.
+
+function transcribeError(message) {
+  const box = $("#transcribe-error");
+  box.textContent = message || "";
+  box.classList.toggle("hidden", !message);
+}
+
+function renderEngineLine(engine) {
+  const words = engineWords(engine);
+  const line = $("#transcribe-engine");
+  line.textContent = words.ok ? words.line : `${words.line} — ${words.detail}`;
+  line.classList.toggle("is-bad", !words.ok);
+}
+
+function fillTranscribeOptions(status) {
+  const model = $("#transcribe-model");
+  if (!model.options.length) {
+    for (const name of status.choices) model.add(new Option(name, name));
+    model.value = status.model;
+  }
+  const collection = $("#transcribe-collection");
+  if (!collection.options.length) {
+    for (const name of status.collections) collection.add(new Option(name, name));
+    collection.value = status.collection;
+  }
+}
+
+//: One job. The bar is the server's fraction; the sentence is a translation of
+//: the same fact into words, because a bar alone cannot say *what* it is doing.
+function jobRow(job) {
+  const li = document.createElement("li");
+  li.className = "tr-job";
+  li.dataset.state = job.state;
+
+  const head = document.createElement("div");
+  head.className = "tr-job-head";
+  const name = document.createElement("span");
+  name.className = "tr-job-name";
+  name.textContent = sourceLabel(job);
+  name.title = job.source || "";
+  head.append(name);
+
+  if (job.note_id) {
+    const open = document.createElement("a");
+    open.className = "tr-job-open";
+    open.href = noteHref(job);
+    open.textContent = "open note";
+    head.append(open);
+  }
+  if (job.only_summary === false && job.note_id) {
+    const again = document.createElement("button");
+    again.type = "button";
+    again.className = "tr-job-again";
+    again.dataset.resummarise = job.note_id;
+    again.textContent = "re-summarise";
+    again.title = "run the summary again without transcribing the recording";
+    head.append(again);
+  }
+
+  const bar = document.createElement("div");
+  bar.className = "tr-bar";
+  const fill = document.createElement("i");
+  fill.style.width = `${percent(job)}%`;
+  bar.append(fill);
+
+  const line = document.createElement("p");
+  line.className = "tr-job-line";
+  line.textContent = headline(job);
+
+  const meta = document.createElement("p");
+  meta.className = "tr-job-meta";
+  meta.textContent = [job.summarize ? "" : "no summary", job.model, durationText(job.duration_s)]
+    .filter(Boolean)
+    .join(" · ");
+
+  li.append(head, bar, line, meta);
+  return li;
+}
+
+function renderTranscribeJobs(jobs) {
+  $("#transcribe-list").replaceChildren(...jobs.map(jobRow));
+  $("#transcribe-count").textContent = String(jobs.length);
+  $("#transcribe-empty").classList.toggle("hidden", jobs.length > 0);
+}
+
+async function renderTranscribe() {
+  let status;
+  try {
+    status = await api.transcribe();
+  } catch (err) {
+    transcribeError(`could not ask what is installed: ${err.message}`);
+    return;
+  }
+  state.transcribeStatus = status;
+  transcribeError("");
+  renderEngineLine(status.engine);
+  fillTranscribeOptions(status);
+  renderTranscribeJobs(status.jobs);
+  scheduleTranscribePoll(status.jobs);
+}
+
+function scheduleTranscribePoll(jobs) {
+  clearTimeout(state.transcribeTimer);
+  state.transcribeTimer = null;
+  const running = jobs.some((job) => job.state !== "done" && job.state !== "failed");
+  if (!running) return;
+  state.transcribeTimer = setTimeout(() => { renderTranscribe(); }, 1500);
+}
+
+//: Start something and show it happening. `run` is a thunk so an upload and a
+//: path go through the same path -- the difference is what the server receives,
+//: not what the view does about it.
+async function startTranscribe(run) {
+  transcribeError("");
+  $("#transcribe-start").disabled = true;
+  try {
+    await run();
+    await renderTranscribe();
+  } catch (err) {
+    transcribeError(err.message);
+  } finally {
+    $("#transcribe-start").disabled = false;
+  }
+}
+
+async function submitTranscribe(event) {
+  event.preventDefault();
+  const model = $("#transcribe-model").value;
+  const collection = $("#transcribe-collection").value;
+  const summarize = $("#transcribe-summarize").checked;
+  const file = state.transcribeFile;
+  const path = $("#transcribe-path").value.trim();
+  if (file) {
+    await startTranscribe(() => api.transcribeUpload(file, {
+      name: file.name, model, collection, summarize,
+    }));
+    return;
+  }
+  if (path) {
+    await startTranscribe(() => api.transcribeStart({ path, model, collection, summarize }));
+    return;
+  }
+  transcribeError("give it a path, a file, or a recording");
+}
+
+function pickTranscribeFile(event) {
+  const file = (event.target.files || [])[0] || null;
+  state.transcribeFile = file;
+  $("#transcribe-picked").textContent = file
+    ? `${file.name} · ${Math.round(file.size / 1024)} KB`
+    : "nothing chosen yet";
+  // One input at a time: a path and a file are two different instructions, and
+  // guessing which one was meant is how a form transcribes the wrong thing.
+  if (file) $("#transcribe-path").value = "";
+}
+
+// -- the microphone ----------------------------------------------------------
+
+let recorder = null;
+let recordedChunks = [];
+let recordClock = null;
+let recordStartedAt = 0;
+
+async function toggleRecord() {
+  if (recorder) {
+    stopRecording();
+    return;
+  }
+  if (!micAvailable()) {
+    transcribeError("this browser cannot record from a microphone");
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    transcribeError(`the microphone was refused: ${err.message}`);
+    return;
+  }
+  const mime = pickRecorderMime((type) => MediaRecorder.isTypeSupported(type));
+  recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  recordedChunks = [];
+  recorder.addEventListener("dataavailable", (event) => {
+    if (event.data && event.data.size) recordedChunks.push(event.data);
+  });
+  recorder.addEventListener("stop", async () => {
+    stream.getTracks().forEach((track) => track.stop());
+    const type = recorder.mimeType || mime || "audio/webm";
+    const blob = new Blob(recordedChunks, { type });
+    recorder = null;
+    recordedChunks = [];
+    stopRecordClock();
+    const name = `${recordingName()}.${extensionFor(type)}`;
+    $("#transcribe-picked").textContent =
+      `${name} · ${Math.round(blob.size / 1024)} KB`;
+    const model = $("#transcribe-model").value;
+    const collection = $("#transcribe-collection").value;
+    await startTranscribe(() => api.transcribeUpload(blob, {
+      name, model, collection, summarize: $("#transcribe-summarize").checked,
+    }));
+  });
+  recorder.start();
+  recordStartedAt = Date.now();
+  const button = $("#transcribe-record");
+  button.classList.add("is-recording");
+  button.textContent = "■ Stop and transcribe";
+  // A recording has no known length while it is being made, so the clock is the
+  // only honest thing to show.
+  recordClock = setInterval(() => {
+    const seconds = Math.round((Date.now() - recordStartedAt) / 1000);
+    $("#transcribe-picked").textContent = `recording · ${elapsedText(seconds)}`;
+  }, 500);
+}
+
+function stopRecording() {
+  if (recorder && recorder.state !== "inactive") recorder.stop();
+  stopRecordClock();
+}
+
+function stopRecordClock() {
+  clearInterval(recordClock);
+  recordClock = null;
+  const button = $("#transcribe-record");
+  if (!button) return;
+  button.classList.remove("is-recording");
+  button.textContent = "● Record from the mic";
+}
+
 async function renderHome() {
   const month = state.homeMonth || new Date();
   const first = localIsoDate(new Date(month.getFullYear(), month.getMonth(), 1));
@@ -2338,6 +2625,23 @@ window.addEventListener("DOMContentLoaded", async () => {
       document.querySelector(`.tab[data-view="${b.dataset.jump}"]`)?.click();
     });
   });
+  // -- transcribe
+  $("#transcribe-form").addEventListener("submit", submitTranscribe);
+  $("#transcribe-file").addEventListener("change", pickTranscribeFile);
+  $("#transcribe-record").addEventListener("click", toggleRecord);
+  $("#transcribe-path").addEventListener("input", () => {
+    // Typing a path is a different instruction from having picked a file, so it
+    // replaces the picked one rather than competing with it.
+    state.transcribeFile = null;
+    $("#transcribe-file").value = "";
+    $("#transcribe-picked").textContent = "nothing chosen yet";
+  });
+  $("#transcribe-list").addEventListener("click", async (event) => {
+    const again = event.target.closest("[data-resummarise]");
+    if (!again) return;
+    await startTranscribe(() => api.transcribeResummarise(again.dataset.resummarise));
+  });
+
   $("#home-today-action").addEventListener("click", async () => {
     const card = state.home?.today_card;
     if (!card) return;

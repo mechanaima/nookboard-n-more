@@ -1,0 +1,434 @@
+"""Transcription: what the engine is given, and what comes back out.
+
+The fixtures here are the shapes the real tools produce, not invented ones:
+whisper.cpp's `-oj` report and ffprobe's JSON are both spelled out in full so a
+parser change that would break against the actual binary breaks here first.
+"""
+
+import shutil
+from datetime import date
+from pathlib import Path
+
+import pytest
+
+from app import transcribe
+from app.transcribe import (
+    Media, Paragraph, Segment, TranscriptionError,
+)
+
+DAY = date(2026, 9, 24)
+
+#: From `whisper-cli -oj`, trimmed to the keys we read but keeping the nesting.
+WHISPER_JSON = """
+{
+  "systeminfo": "AVX = 1 | CUDA = 1",
+  "model": {"type": "small", "multilingual": true, "mels": 80},
+  "params": {"model": "models/ggml-small.bin", "language": "en", "translate": false},
+  "result": {"language": "en"},
+  "transcription": [
+    {"timestamps": {"from": "00:00:00,000", "to": "00:00:02,500"},
+     "offsets": {"from": 0, "to": 2500},
+     "text": " And so my fellow Americans,"},
+    {"timestamps": {"from": "00:00:02,500", "to": "00:00:07,000"},
+     "offsets": {"from": 2500, "to": 7000},
+     "text": " ask not what your country can do for you,"},
+    {"timestamps": {"from": "00:00:09,000", "to": "00:00:11,000"},
+     "offsets": {"from": 9000, "to": 11000},
+     "text": " ask what you can do for your country."}
+  ]
+}
+"""
+
+#: From `ffprobe -print_format json -show_format -show_streams`.
+PROBE_JSON = """
+{
+  "streams": [
+    {"codec_type": "video", "codec_name": "h264", "width": 1280},
+    {"codec_type": "audio", "codec_name": "aac", "sample_rate": "48000", "channels": 2}
+  ],
+  "format": {"filename": "/tmp/lecture-3.m4a", "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+             "duration": "3125.40"}
+}
+"""
+
+
+# --- ids --------------------------------------------------------------------
+
+def test_the_first_id_is_bare_and_only_later_ones_are_numbered():
+    """Asserted directly, not by comparing one id to the next.
+
+    A test that only checks `second == first + "-2"` passes just as happily when
+    every id is shifted -- which is how the templates shipped with every first
+    application coming back as `(2)`.
+    """
+    # Named by literal, on a slug with no digits of its own: `"-2" not in first`
+    # looked like a bareness check and was really checking the date, which
+    # contains "-2" itself.
+    first = transcribe.note_id(DAY, "algebra")
+    assert first == "transcript-2026-09-24-algebra"
+
+    second = transcribe.note_id(DAY, "algebra", taken={first})
+    assert second == "transcript-2026-09-24-algebra-2"
+    third = transcribe.note_id(DAY, "algebra", taken={first, second})
+    assert third == "transcript-2026-09-24-algebra-3"
+
+
+def test_a_gap_in_the_suffixes_does_not_reuse_a_taken_id():
+    taken = {"transcript-2026-09-24-a", "transcript-2026-09-24-a-2"}
+    assert transcribe.note_id(DAY, "a", taken) == "transcript-2026-09-24-a-3"
+
+
+def test_the_id_prefix_matches_the_predicate_that_guards_it():
+    """The derived id against the predicate, never a literal.
+
+    `weekly.note_id` emitted `week-` while the regex expected `weekly-`, so the
+    guard matched nothing and the note was free to become a board card. This
+    asserts what the code *produces*.
+    """
+    from app import models
+
+    assert models.is_transcript_note_id(transcribe.note_id(DAY, "anything"))
+    assert models.is_generated_note_id(transcribe.note_id(DAY, "anything"))
+
+
+# --- slugs and stamps -------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Lecture 3 — Recursion.m4a", "lecture-3-recursion-m4a"),
+        ("  spaced  out  ", "spaced-out"),
+        ("Café résumé", "cafe-resume"),
+        ("!!!", "recording"),
+        ("", "recording"),
+        ("日本語", "recording"),
+    ],
+)
+def test_slugify(raw, expected):
+    assert transcribe.slugify(raw) == expected
+
+
+def test_slugify_caps_length():
+    assert len(transcribe.slugify("word " * 40, limit=20)) <= 20
+
+
+@pytest.mark.parametrize(
+    "seconds,expected",
+    [(0, "0:00"), (4.9, "0:04"), (61, "1:01"), (3599, "59:59"),
+     (3600, "1:00:00"), (7325, "2:02:05"), (-5, "0:00")],
+)
+def test_stamp(seconds, expected):
+    assert transcribe.stamp(seconds) == expected
+
+
+def test_an_hour_long_recording_gets_hours_in_its_stamps():
+    """The reason `stamp` is not just `m:ss`: a lecture is over an hour, and
+    `62:05` in a two-hour recording reads as broken arithmetic."""
+    assert transcribe.stamp(3725).startswith("1:")
+
+
+# --- probing ----------------------------------------------------------------
+
+def test_parse_probe_reads_the_audio_stream_not_the_video_one():
+    media = transcribe.parse_probe(PROBE_JSON)
+    assert media.audio_codec == "aac"
+    assert media.channels == 2
+    assert media.container == "mov"
+    assert media.duration_s == pytest.approx(3125.40)
+    assert "52:05" in media.describe()
+
+
+def test_a_file_with_no_audio_is_refused_by_name():
+    """A silent screen recording is the common case. Transcribing it would
+    produce an empty note reported as a success."""
+    silent = PROBE_JSON.replace('"codec_type": "audio"', '"codec_type": "data"')
+    with pytest.raises(TranscriptionError, match="no audio track"):
+        transcribe.parse_probe(silent)
+
+
+def test_probe_arrays_ask_for_json_and_name_the_input(tmp_path):
+    args = transcribe.probe_args(tmp_path / "a.m4a")
+    assert args[0] == "ffprobe"
+    assert "-print_format" in args and "json" in args
+    assert str(tmp_path / "a.m4a") in args
+
+
+def test_extract_drops_video_and_asks_for_16k_mono(tmp_path):
+    """`-vn` is why a video file needs no special path anywhere else: the only
+    thing downstream ever sees is a 16 kHz mono wav."""
+    args = transcribe.extract_args(tmp_path / "lecture.mp4", tmp_path / "out.wav")
+    assert args[0] == "ffmpeg"
+    assert "-vn" in args
+    assert args[args.index("-ac") + 1] == "1"
+    assert args[args.index("-ar") + 1] == "16000"
+
+
+def test_whisper_is_asked_for_its_json_report(tmp_path):
+    args = transcribe.whisper_args(
+        "/w/whisper-cli", tmp_path / "ggml-small.bin",
+        tmp_path / "a.wav", tmp_path / "out",
+    )
+    assert args[0] == "/w/whisper-cli"
+    assert "-oj" in args
+    assert args[args.index("-of") + 1] == str(tmp_path / "out")
+
+
+# --- parsing the report -----------------------------------------------------
+
+def test_parse_whisper_json_reads_offsets_as_seconds():
+    result = transcribe.parse_whisper_json(WHISPER_JSON)
+    assert result.language == "en"
+    assert len(result.segments) == 3
+    assert result.segments[0].start == 0.0
+    assert result.segments[2].start == pytest.approx(9.0)
+    assert result.segments[1].text.startswith("ask not")
+
+
+def test_silence_is_refused_rather_than_written_as_an_empty_note():
+    empty = '{"result": {"language": "en"}, "transcription": []}'
+    with pytest.raises(TranscriptionError, match="no speech"):
+        transcribe.parse_whisper_json(empty)
+
+
+def test_segments_with_no_text_are_skipped():
+    payload = """
+    {"result": {"language": "en"}, "transcription": [
+      {"offsets": {"from": 0, "to": 100}, "text": "   "},
+      {"offsets": {"from": 100, "to": 200}, "text": "real words"}
+    ]}
+    """
+    result = transcribe.parse_whisper_json(payload)
+    assert [s.text for s in result.segments] == ["real words"]
+
+
+# --- paragraphs -------------------------------------------------------------
+
+def _seg(start, end, text):
+    return Segment(start=start, end=end, text=text)
+
+
+def test_a_pause_starts_a_new_paragraph():
+    paras = transcribe.group_paragraphs([
+        _seg(0, 5, "one"), _seg(5, 9, "two"), _seg(11, 14, "three"),
+    ])
+    assert len(paras) == 2
+    assert paras[0].text == "one two"
+    assert paras[0].start == 0
+    assert paras[1].text == "three"
+    assert paras[1].start == 11
+
+
+def test_an_unbroken_monologue_is_still_cut_into_navigable_paragraphs():
+    """The length cap is not cosmetic: whisper only breaks on its decoder
+    window, so a lecturer who never pauses would otherwise produce one
+    timestamp for an hour of text and no way to find anything in it."""
+    segs = [_seg(i * 5, i * 5 + 5, "word") for i in range(40)]  # 200s, no gaps
+    paras = transcribe.group_paragraphs(segs, max_s=48.0)
+    assert len(paras) > 1
+    assert all(p.start < 200 for p in paras)
+
+
+def test_a_long_paragraph_is_also_capped_by_length():
+    segs = [_seg(i * 5, i * 5 + 5, "word " * 40) for i in range(20)]
+    paras = transcribe.group_paragraphs(segs, max_s=10_000, max_chars=500)
+    assert len(paras) > 1
+
+
+def test_grouping_nothing_is_not_an_error():
+    assert transcribe.group_paragraphs([]) == []
+
+
+def test_transcript_markdown_stamps_every_paragraph():
+    md = transcribe.transcript_markdown([
+        Paragraph(start=0, text="hello"), Paragraph(start=75, text="world"),
+    ])
+    assert "`[0:00]` hello" in md
+    assert "`[1:15]` world" in md
+
+
+# --- availability -----------------------------------------------------------
+
+def _fake_tool(path):
+    """A stand-in binary: present, and executable. `resolve_tool` insists on the
+    exec bit, and a text file with no chmod is not a binary."""
+    path.write_text("#!/bin/sh\nexit 0\n")
+    path.chmod(0o755)
+    return path
+
+
+def _engine(tmp_path, *, cli=True, models=("small",), ffmpeg=True):
+    cli_path = tmp_path / "whisper-cli"
+    if cli:
+        _fake_tool(cli_path)
+    models_dir = tmp_path / "models"
+    models_dir.mkdir(exist_ok=True)
+    for name in models:
+        (models_dir / f"ggml-{name}.bin").write_bytes(b"x" * 16)
+    # `ffmpeg` is True (make one), False (none), or an explicit path -- which is
+    # how a test asks for "configured but wrong", and it has to stay wrong. The
+    # first version of this treated the argument as a boolean and created a real
+    # file even when a bogus path was passed in.
+    if ffmpeg is True:
+        ffmpeg_arg = str(_fake_tool(tmp_path / "ffmpeg"))
+    else:
+        ffmpeg_arg = str(ffmpeg) if ffmpeg else ""
+    return transcribe.available(
+        cli=str(cli_path) if cli else "",
+        models_dir=models_dir,
+        ffmpeg=ffmpeg_arg,
+        wanted=["small", "medium"],
+    )
+
+
+def test_a_complete_install_is_ready(tmp_path):
+    engine = _engine(tmp_path)
+    assert engine.ready
+    assert engine.cli.endswith("whisper-cli")
+    assert "small" in engine.models
+    assert engine.problems == ()
+
+
+def test_only_the_models_that_are_present_are_offered(tmp_path):
+    engine = _engine(tmp_path, models=("small",))
+    assert sorted(engine.models) == ["small"]
+
+
+def test_each_missing_piece_is_named_with_the_variable_that_fixes_it(tmp_path):
+    """A bogus ffmpeg path, not an empty one: empty falls back to PATH, where
+    ffmpeg really is installed."""
+    engine = _engine(tmp_path, cli=False, models=(), ffmpeg=str(tmp_path / "nope-ffmpeg"))
+    assert not engine.ready
+    joined = " ".join(engine.problems)
+    assert "NOOKBOARD_WHISPER_CLI" in joined
+    assert "NOOKBOARD_WHISPER_MODELS" in joined
+    assert "ffmpeg" in joined
+
+
+def test_a_cli_path_that_does_not_exist_is_reported_as_such(tmp_path):
+    """Configured but wrong, which is a different failure from unset: the first
+    is a typo to fix, the second is a thing to install."""
+    engine = transcribe.available(
+        cli=str(tmp_path / "nope" / "whisper-cli"),
+        models_dir=tmp_path / "models",
+        ffmpeg="ffmpeg",
+        wanted=["small"],
+    )
+    assert not engine.ready
+    assert any("is not at" in p for p in engine.problems)
+
+
+# --- the note ---------------------------------------------------------------
+
+def test_the_body_starts_with_both_regions_fenced():
+    body = transcribe.render_body(provenance_line="_Source: x_", transcript="hi")
+    assert "<!-- nookboard:transcript-summary:start -->" in body
+    assert "<!-- nookboard:transcript-body:start -->" in body
+    assert body.index("transcript-summary:start") < body.index("transcript-body:start")
+
+
+def test_re_summarising_leaves_the_transcript_and_your_own_text_alone():
+    """The property the fence exists for, and the one that is worth a test:
+    everything this program did not write survives."""
+    body = transcribe.render_body(provenance_line="_Source: x_", transcript="first transcript")
+    body = transcribe.set_summary(body, "first summary")
+    body = body.rstrip("\n") + "\n\nMy own note about this lecture.\n"
+    body = transcribe.set_summary(body, "second summary")
+
+    assert "second summary" in body
+    assert "first summary" not in body
+    assert "first transcript" in body
+    assert "My own note about this lecture." in body
+
+
+def test_re_transcribing_replaces_only_the_transcript():
+    body = transcribe.render_body(provenance_line="_Source: x_", transcript="old text")
+    body = transcribe.set_summary(body, "the summary")
+    body = transcribe.set_transcript(body, "new text")
+    assert "new text" in body
+    assert "old text" not in body
+    assert "the summary" in body
+
+
+def test_an_empty_summary_says_so_instead_of_leaving_a_hole():
+    body = transcribe.set_summary(
+        transcribe.render_body(provenance_line="_S_", transcript="t"), "   "
+    )
+    assert "No summary" in body
+
+
+def test_provenance_names_the_source_the_model_and_the_length():
+    line = transcribe.provenance(
+        media=Media(path=__import__("pathlib").Path("/tmp/a.m4a"), duration_s=3125.4,
+                    container="mov", audio_codec="aac", sample_rate=48000, channels=2),
+        source="/tmp/a.m4a", model="small", language="en", kept=False,
+    )
+    assert "/tmp/a.m4a" in line
+    assert "small" in line
+    assert "52:05" in line
+
+
+def test_provenance_omits_a_language_it_does_not_know():
+    line = transcribe.provenance(
+        media=None, source="rec.webm", model="small", language="unknown", kept=True,
+    )
+    assert "unknown" not in line
+
+
+def test_the_title_is_the_filename_dated():
+    assert transcribe.title_for("/x/Lecture 3 — Recursion.m4a", DAY) == (
+        "Lecture 3 — Recursion · 2026-09-24"
+    )
+    assert transcribe.title_for("/x/__.wav", DAY).startswith("Recording")
+
+
+# --- finding the tools ------------------------------------------------------
+#
+# This is where a real bug lived. whisper-cli resolved a bare name on PATH and
+# ffmpeg did not, so on a machine with a working ffmpeg the engine reported
+# "ffmpeg is not at ffmpeg" and refused every job. The end-to-end run caught it;
+# these pin it so it cannot come back.
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed here")
+def test_a_bare_tool_name_is_looked_up_on_path():
+    assert transcribe.resolve_tool("ffmpeg") == shutil.which("ffmpeg")
+    assert transcribe.resolve_tool("", default="ffmpeg") == shutil.which("ffmpeg")
+
+
+def test_a_tool_that_is_not_there_resolves_to_nothing():
+    assert transcribe.resolve_tool("definitely-not-a-real-tool-9c3f") == ""
+    assert transcribe.resolve_tool("") == ""
+    assert transcribe.resolve_tool("", default="") == ""
+
+
+def test_a_configured_path_is_checked_rather_than_looked_up(tmp_path):
+    real = _fake_tool(tmp_path / "my-ffmpeg")
+    assert transcribe.resolve_tool(str(real)) == str(real)
+    assert transcribe.resolve_tool(str(tmp_path / "missing")) == ""
+
+
+def test_a_missing_configured_path_says_so_instead_of_blaming_the_path():
+    engine = transcribe.available(
+        cli="/nope/whisper-cli", models_dir=Path("/nope"), ffmpeg="/nope/ffmpeg",
+        wanted=["small"],
+    )
+    joined = " · ".join(engine.problems)
+    assert "/nope/whisper-cli" in joined
+    assert "/nope/ffmpeg" in joined
+    assert not engine.ready
+
+
+def test_ffprobe_is_sought_beside_a_resolved_ffmpeg(tmp_path):
+    """The engine line names a binary; that binary should be the one that runs."""
+    assert transcribe.ffprobe_for("ffmpeg") == "ffprobe"
+    beside = _fake_tool(tmp_path / "ffprobe")
+    ffmpeg = _fake_tool(tmp_path / "ffmpeg")
+    assert transcribe.ffprobe_for(str(ffmpeg)) == str(beside)
+
+
+def test_the_tools_get_the_names_the_engine_resolved():
+    """A bare name through the arguments means the PATH's ffmpeg runs while the
+    engine line reports a different one."""
+    args = transcribe.probe_args(Path("/x/a.wav"), ffprobe="/opt/bin/ffprobe")
+    assert args[0] == "/opt/bin/ffprobe"
+    args = transcribe.extract_args(Path("/x/a.mp4"), Path("/tmp/a.wav"), ffmpeg="/opt/bin/ffmpeg")
+    assert args[0] == "/opt/bin/ffmpeg"

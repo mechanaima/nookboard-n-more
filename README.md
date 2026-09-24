@@ -168,6 +168,9 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
 - **ICS subscription** — `GET /api/calendar.ics` — external calendar apps subscribe
 - **Obsidian interop** — the vault is a valid Obsidian vault; point nookboard at
   any Markdown folder with `NOOKBOARD_VAULT` (see [Obsidian](#obsidian))
+- **Transcription** — hand it a recording (a path, a file, or the microphone)
+  and get a note: whisper.cpp on the GPU for the transcript, the local model for
+  the summary, nothing leaving the machine (see [Transcription](#transcription))
 - **Local AI** — summarize / suggest tags / suggest links / ask your notes,
   streamed from llama.cpp (see [Local AI](#local-ai))
 
@@ -557,6 +560,76 @@ Applied on any day it names the week it lands in, and the two queries then
 answer for that week rather than for today, so a note made in September still
 reads correctly in March.
 
+## Transcription
+
+Hand the app a recording and get a note back. Three ways in, all built the same
+way underneath:
+
+- a **path** to a file that is already on this machine — nothing is copied, the
+  note records the path, the file stays where its owner put it
+- a **file you pick** — copied into `vault/.audio/`, because for that file the
+  copy is the one that will still exist tomorrow
+- the **microphone** — recorded in the browser, uploaded on stop, kept in
+  `vault/.audio/` for the same reason
+
+ffmpeg reads it (video included — `-vn` means a screen recording costs a decode
+and not two gigabytes of frames), whisper.cpp transcribes it on the GPU, and the
+local model writes the summary. **Nothing leaves the machine.**
+
+The note lands in `transcripts/` as `transcript-YYYY-MM-DD-<slug>.md`:
+
+```markdown
+_Source: `/home/irving/lectures/week-3.m4a` · mov · aac · 52:05 · whisper `small` · en_
+
+<!-- nookboard:transcript-summary:start -->
+Three sentences of prose, then at most six bullets.
+<!-- nookboard:transcript-summary:end -->
+
+<!-- nookboard:transcript-body:start -->
+`[0:00]` The first thing the speaker said.
+`[0:12]` And then the next, after a pause long enough to be a paragraph.
+<!-- nookboard:transcript-body:end -->
+```
+
+Fenced regions, like a daily note's list: re-running replaces exactly what it
+generated last time and leaves anything you typed yourself alone. The note is
+written **as soon as the transcript exists**, with the summary added a minute
+later — the transcript is the expensive part and is already true, while the
+summary is a model call that may fail. If it does, the note says why and the
+summary can be retried on its own (`re-summarise` on the job, or
+`POST /api/transcribe/summarize`) without transcribing the recording again.
+
+A transcript is a **record, not work**: it never becomes a board card and never
+counts as something you finished that day. It is a note — searchable, editable,
+wikilinkable, in its own collection.
+
+Long recordings are summarised **in parts and then combined**: `small` transcribes
+a one-hour lecture in a few minutes, and a single pass over the transcript would
+be both slower and past the point where a local model starts losing the
+beginning. Chunks follow the paragraph boundaries the transcript already has,
+which are places the speaker stopped.
+
+Jobs are **one at a time** — whisper and the summary model share one GPU, so two
+at once do not finish sooner, they page — and they live in memory. After a
+restart a job is gone; the note is not. The UI says so rather than guessing that
+it finished.
+
+### Pointing it at whisper.cpp
+
+The engine is found, reported, and overridable. `GET /api/transcribe` says which
+binary and which models were found, and the view shows that line: "transcription
+is broken" and "it is running the wrong build" are different problems and only
+one of them is answerable from outside.
+
+```
+NOOKBOARD_WHISPER_CLI     whisper-cli to run (default: look in the usual places)
+NOOKBOARD_WHISPER_MODELS  directory of ggml-*.bin models
+NOOKBOARD_WHISPER_MODEL   model to use by default (default: small)
+```
+
+Models looked for: `ggml-small.bin` and `ggml-medium.bin`. If nothing is found,
+the endpoint says which variable fixes it instead of failing anonymously.
+
 ## API
 
 - `GET    /api/health`
@@ -621,15 +694,46 @@ Local AI (all stream NDJSON, one JSON object per line):
 Stream kinds: `reasoning`, `content`, `result`, `error`, `done`. A `truncated`
 error means the model spent its whole budget thinking.
 
+Transcription (all local: ffmpeg → whisper.cpp → the local model). A job is
+minutes of work, so it is started and then polled:
+
+- `GET    /api/transcribe` → the resolved engine (`cli`, `models`, `ffmpeg`,
+  `ready`, `problems`), the model choices, the collections, the accepted
+  extensions, and the recent jobs
+- `POST   /api/transcribe` `{path, model?, collection?, summarize?}` → a job, or
+  `400` if the path is not there, or `409` naming every reason the engine is not
+  ready
+- `POST   /api/transcribe/upload?name=&model=&collection=&summarize=` → the body
+  *is* the file. No multipart: the browser already holds the bytes (a Blob from
+  the picker, or the webm the recorder just made), so nothing takes them apart
+  again. Kept in `vault/.audio/`, `400` for a type it cannot read or an empty body
+- `GET    /api/transcribe/{job_id}` → one job; `404` if it is gone, which after a
+  restart it is
+- `POST   /api/transcribe/summarize` `{id}` → a job that rewrites one note's
+  summary from the transcript already in it
+
+A job is `{id, source, state, progress, message, note_id, error, model,
+summarize, only_summary, keep, duration_s, elapsed_s}`. States: `queued`,
+`probing`, `extracting`, `transcribing`, `summarising`, `done`, `failed`.
+`progress` is a real fraction — whisper's own `progress = N%` off stderr, mapped
+onto the job — because a bar that lies is worse than no bar.
+
 ## Where data lives
 
 ```
 vault/
   .index.sqlite       # SQLite index (rebuilt from .md files if missing)
+  .audio/             # recordings you uploaded or made in the app
   inbox/<id>.md
   home/<id>.md
   work/<id>.md
+  transcripts/<id>.md # one per recording
 ```
+
+`.audio/` is dot-prefixed on purpose: `Vault.collections()` lists every
+directory, so a plain `audio/` would be offered as an empty notes collection and
+look like somewhere to put notes. It is a folder of media sitting beside the
+notes, and nothing that walks the vault reads it.
 
 Markdown on disk is the source of truth. The SQLite index powers
 search and calendar aggregation. Delete `vault/.index.sqlite` and
@@ -731,21 +835,27 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 395 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 500 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),
                  #              daily (stamping/sections/scheduling/recap),
                  #              weekly (ISO weeks/scheduling/rollup/fences),
                  #              templates (placeholders/titles/applying),
-                 #              query (periods/day links/completed/refusals)
-make test-js     # 117 node:test — rapid-log parsing, calendar maths, wikilinks,
+                 #              query (periods/day links/completed/refusals),
+                 #              transcript (the whisper report, the ffprobe
+                 #              JSON, paragraph grouping, the fence, finding the
+                 #              tools), summary (chunking, prompts, the reply's
+                 #              shape), transcribe API (the endpoints)
+make test-js     # 147 node:test — rapid-log parsing, calendar maths, wikilinks,
                  #              ISO week labels, display helpers, board helpers,
                  #              mood grid helpers, query fences (finding them,
                  #              splicing answers, leaving other languages alone),
-                 #              and that every local import exists
+                 #              transcribe wording (states, progress, durations,
+                 #              the recorder's types), and that every local
+                 #              import exists
 make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
-./tools/check_render.sh   # 80 DOM assertions in headless Chromium
+./tools/check_render.sh   # 118 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether

@@ -26,6 +26,7 @@
       <button data-view="rapid"       class="tab"        role="tab">Rapid Log</button>
       <button data-view="board"       class="tab"        role="tab">Board</button>
       <button data-view="mood"        class="tab"        role="tab">Mood</button>
+      <button data-view="transcribe"  class="tab"        role="tab">Transcribe</button>
       <button data-view="collections" class="tab"        role="tab">Collections</button>
       <button data-view="timeline"    class="tab"        role="tab">Timeline</button>
       <button data-view="calendar"    class="tab"        role="tab">Calendar</button>
@@ -218,6 +219,72 @@
           </section>
         </div>
 
+      </div>
+    </section>
+
+    <section id="transcribe-view" class="transcribe-view hidden">
+      <div class="home-inner">
+
+        <header class="home-hero">
+          <svg class="home-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <rect x="9" y="3" width="6" height="11" rx="3"/>
+            <path d="M5.6 11.4a6.4 6.4 0 0 0 12.8 0M12 17.8V21M8.4 21h7.2"/>
+          </svg>
+          <h1 class="home-title">Transcribe</h1>
+        </header>
+
+        <p id="transcribe-engine" class="tr-engine">asking what is installed…</p>
+
+        <div class="h-card tr-card">
+          <form id="transcribe-form" class="tr-form" autocomplete="off">
+            <div class="tr-field">
+              <label class="field-label" for="transcribe-path">a recording already on this machine</label>
+              <input id="transcribe-path" class="tr-input" type="text" autocomplete="off"
+                     placeholder="/home/irving/lectures/week-3.m4a"
+                     aria-label="path to a recording on this machine">
+            </div>
+
+            <p class="tr-or"><span>or</span></p>
+
+            <div class="tr-picks">
+              <label class="btn tr-pick">
+                <input id="transcribe-file" type="file" accept="audio/*,video/*" class="tr-file">
+                <span>Choose a file…</span>
+              </label>
+              <button id="transcribe-record" class="btn" type="button">● Record from the mic</button>
+              <span id="transcribe-picked" class="tr-note">nothing chosen yet</span>
+            </div>
+
+            <div class="tr-opts">
+              <label class="tr-opt">model
+                <select id="transcribe-model" aria-label="whisper model"></select>
+              </label>
+              <label class="tr-opt">into
+                <select id="transcribe-collection" aria-label="collection for the note"></select>
+              </label>
+              <label class="tr-opt tr-opt--check">
+                <input id="transcribe-summarize" type="checkbox" checked> summarise it
+              </label>
+              <button id="transcribe-start" class="btn btn--primary" type="submit">Transcribe</button>
+            </div>
+          </form>
+
+          <p id="transcribe-error" class="tr-error hidden" role="alert"></p>
+          <p class="tr-why">
+            ffmpeg reads the file, whisper.cpp transcribes it on the GPU, and the local model writes
+            the summary. Nothing leaves this machine. A file you pick is copied into the vault’s
+            <code>.audio</code>; a path is read where it lies.
+          </p>
+        </div>
+
+        <section class="tr-jobs">
+          <div class="h-head">
+            <h2>Recent</h2>
+            <span id="transcribe-count" class="pane-count">0</span>
+          </div>
+          <ul id="transcribe-list" class="tr-list"></ul>
+          <p id="transcribe-empty" class="tr-empty">Nothing transcribed yet.</p>
+        </section>
       </div>
     </section>
 

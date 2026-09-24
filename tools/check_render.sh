@@ -30,11 +30,12 @@ DOM="$(mktemp /tmp/nookboard-dom-XXXXXX.html)"
 BOARD_DOM="$(mktemp /tmp/nookboard-board-XXXXXX.html)"
 MOOD_DOM="$(mktemp /tmp/nookboard-mood-XXXXXX.html)"
 HOME_DOM="$(mktemp /tmp/nookboard-home-XXXXXX.html)"
+TRANSCRIBE_DOM="$(mktemp /tmp/nookboard-transcribe-XXXXXX.html)"
 cleanup() {
   for id in "$NOTE_ID" "$TARGET_ID" "$BOARD_ID" "$BOARD_BLOCKER" "$MOOD_ID"; do
     curl -s -o /dev/null -X DELETE "$BASE/api/notes/$id" || true
   done
-  rm -rf "$PROFILE" "$DOM" "$BOARD_DOM" "$MOOD_DOM" "$HOME_DOM"
+  rm -rf "$PROFILE" "$DOM" "$BOARD_DOM" "$MOOD_DOM" "$HOME_DOM" "$TRANSCRIBE_DOM"
 }
 trap cleanup EXIT
 
@@ -291,6 +292,39 @@ check_home "stats card describes the vault" 'id="home-stats"'
 check_count "$HOME_DOM" "eight tiles across two cards" 'class="h-tile"' 8
 check_home_absent "clock not left as a placeholder" 'id="home-time"[^>]*>—<'
 check_home_absent "dashboard not left hidden"       'id="home-view" class="home-view hidden"'
+
+# --- render 5: the transcribe view ----------------------------------------
+# The engine line and the job list are painted from /api/transcribe after boot,
+# so these are really asking whether that fetch landed and whether the form was
+# built from it: a throw inside renderTranscribe() leaves the placeholder line
+# and two empty selects, which is what the _absent checks pin.
+TRANSCRIBE_URL="$BASE/#/view/transcribe"
+chromium --headless=new --disable-gpu --no-sandbox \
+  --user-data-dir="$PROFILE" --virtual-time-budget=5000 \
+  --dump-dom "$TRANSCRIBE_URL" > "$TRANSCRIBE_DOM" 2>/dev/null
+
+check_tr() { check_file "$TRANSCRIBE_DOM" "$1" "$2"; }
+check_tr_absent() { check_absent "$TRANSCRIBE_DOM" "$1" "$2"; }
+
+echo "rendering $TRANSCRIBE_URL  ($(wc -c < "$TRANSCRIBE_DOM") bytes of DOM)"
+
+check_tr "transcribe tab marked active"   'data-view="transcribe"[^>]*class="tab active"|class="tab active"[^>]*data-view="transcribe"'
+check_tr "view shown, not hidden"         'id="transcribe-view" class="transcribe-view"'
+check_tr "layout in wide mode"            'class="layout is-wide'
+check_tr "engine line filled"             'id="transcribe-engine"[^>]*>[^<]+<'
+check_tr "a path can be typed"            'id="transcribe-path"'
+check_tr "a file can be picked"           'id="transcribe-file"'
+check_tr "the microphone is offered"      'id="transcribe-record"'
+check_tr "a start action is present"      'id="transcribe-start"'
+check_tr "the summary can be declined"    'id="transcribe-summarize"'
+check_tr "the job list exists"            'id="transcribe-list"'
+check_tr "model choices offered"          '<option value="small"|<option value="medium"'
+check_tr "transcripts is offered as a collection" '<option value="transcripts"'
+check_tr "the empty state shows with no jobs" 'id="transcribe-empty" class="tr-empty"'
+check_tr "what happens to the file is stated" 'Nothing leaves this machine'
+check_tr_absent "engine line not the placeholder" 'id="transcribe-engine"[^>]*>asking what is installed'
+check_tr_absent "no error shown before anything is tried" 'id="transcribe-error" class="tr-error"'
+check_tr_absent "the empty state is not left under a job" 'id="transcribe-list"><li'
 
 echo
 echo "pass=$pass fail=$fail"

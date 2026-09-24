@@ -12,7 +12,7 @@ from typing import Optional
 
 from dataclasses import replace
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from pydantic import BaseModel, Field
@@ -38,6 +38,8 @@ from .ics import notes_to_ics
 from .config import Settings, load_settings
 from . import ai
 from . import daily
+from . import transcribe
+from .transcribe_run import AUDIO_DIRNAME, Transcriber, transcript_of
 from .llm import LLMError, LlamaCpp
 
 
@@ -333,7 +335,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
 
     @app.get("/api/collections")
     def list_collections():
-        """The collections, including the templates one even while it is empty.
+        """The collections, including the ones that exist before anything is in them.
 
         Templates are a first-class idea in this app, and the editor's collection
         dropdown can only offer what already exists -- so leaving `templates` out
@@ -341,10 +343,15 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         the obvious route: the collection you would put it in was not on the list
         until you had already put something in it. Listing it empty costs a row
         and removes the deadlock.
+
+        `transcripts` is here for the same reason: the transcribe form's "into"
+        dropdown defaults to it, and a default that is not among the options is a
+        form that cannot be submitted.
         """
         cols = vault.collections()
-        if templates.TEMPLATES_COLLECTION not in cols:
-            cols = sorted([*cols, templates.TEMPLATES_COLLECTION])
+        for name in (templates.TEMPLATES_COLLECTION, transcribe.TRANSCRIPT_COLLECTION):
+            if name not in cols:
+                cols = sorted([*cols, name])
         return cols
 
     @app.get("/api/notes")
@@ -829,6 +836,167 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             ai.build_ask_messages(question, context),
             finish=lambda text: {"notes": [n.to_dict() for n in context]},
         )
+
+    # -- transcription (local whisper.cpp) ---------------------------------
+    #
+    # Nothing here leaves the machine: ffmpeg reads the file, whisper.cpp
+    # transcribes it on the GPU, and the same local model as everywhere else
+    # writes the summary. A job is minutes of work, so this is start-and-poll
+    # rather than one long request. The job table is in memory -- after a restart
+    # a job is gone and the UI says so, because the honest answer is "start it
+    # again" and not a guess that it finished.
+
+    transcriber = Transcriber(
+        cli=cfg.whisper_cli,
+        models_dir=cfg.whisper_models,
+        default_model=cfg.whisper_model,
+        vault=vault,
+        taken_ids=lambda: [n.id for n in vault.list_all()],
+        llm=llm,
+        audio_dir=vault.root / AUDIO_DIRNAME,
+    )
+
+    def _engine() -> transcribe.Engine:
+        """What is installed, asked fresh each time.
+
+        Not cached: a whisper build or a model download that lands while the
+        server is running should show up, and a stale "ready" is exactly the
+        kind of small lie that costs an hour.
+        """
+        wanted = list(dict.fromkeys([cfg.whisper_model, *transcribe.MODEL_CHOICES]))
+        return transcriber.engine(wanted)
+
+    def _unique_path(directory: Path, stem: str, suffix: str) -> Path:
+        """`name.webm`, then `name-2.webm`.
+
+        An upload must not overwrite the previous recording: for something
+        recorded in the browser, the file in this directory is the only copy
+        that exists.
+        """
+        candidate = directory / f"{stem}{suffix or '.webm'}"
+        counter = 2
+        while candidate.exists():
+            candidate = directory / f"{stem}-{counter}{suffix or '.webm'}"
+            counter += 1
+        return candidate
+
+    @app.get("/api/transcribe")
+    def transcribe_status():
+        """What is installed, and what has run recently.
+
+        The engine is reported even when it is fine. Which whisper binary and
+        which models were found is the difference between "transcription is
+        broken" and "it is running the wrong build with the wrong model", and
+        only one of those is answerable from outside.
+        """
+        return {
+            "engine": _engine().as_dict(),
+            "model": cfg.whisper_model,
+            "choices": list(transcribe.MODEL_CHOICES),
+            "collection": transcribe.TRANSCRIPT_COLLECTION,
+            "collections": list_collections(),
+            "extensions": sorted(transcribe.MEDIA_EXTENSIONS),
+            "audio_dir": str(vault.root / AUDIO_DIRNAME),
+            "jobs": transcriber.recent(),
+        }
+
+    @app.post("/api/transcribe", status_code=201)
+    async def transcribe_file(payload: dict):
+        """Transcribe a file that is already on disk. Nothing is copied -- the
+        note records the path, and the file stays where its owner put it.
+
+        `async def`, not `def`: a sync handler is run in a worker thread, where
+        there is no event loop for the job's task to be created on, and every
+        submission is a 500. The work itself is spawned and returned from, so
+        this handler only has to run in the loop that will run the job.
+        """
+        raw = (payload.get("path") or "").strip()
+        if not raw:
+            raise HTTPException(400, "a path is required")
+        target = Path(raw).expanduser()
+        if not target.is_file():
+            raise HTTPException(400, f"no such file: {target}")
+        engine = _engine()
+        if not engine.ready:
+            raise HTTPException(409, " · ".join(engine.problems))
+        job = transcriber.submit(
+            path=target,
+            source=str(target),
+            model=(payload.get("model") or cfg.whisper_model),
+            collection=(payload.get("collection") or transcribe.TRANSCRIPT_COLLECTION),
+            summarize=bool(payload.get("summarize", True)),
+            keep=False,
+        )
+        return job.as_dict()
+
+    @app.post("/api/transcribe/upload", status_code=201)
+    async def transcribe_upload(
+        request: Request,
+        name: str,
+        model: str = "",
+        collection: str = "",
+        summarize: bool = True,
+    ):
+        """Transcribe something that only exists in the browser.
+
+        The body is the file itself, not a multipart form. The browser already
+        holds the bytes -- a Blob from the picker, or the webm the recorder just
+        produced -- so posting them straight means nothing has to take them apart
+        again, and the app needs no upload dependency to do it.
+
+        What was uploaded is kept, under the vault's `.audio`. For a recording
+        made in the browser this is the only copy there is; a note naming a
+        temporary file nobody can open tomorrow would be a lie about where the
+        audio went.
+        """
+        leaf = Path(name or "recording").name
+        suffix = Path(leaf).suffix.lower()
+        if suffix not in transcribe.MEDIA_EXTENSIONS:
+            raise HTTPException(
+                400,
+                f"{suffix or 'that file type'} is not audio or video (this app reads "
+                f"{', '.join(sorted(transcribe.MEDIA_EXTENSIONS))})",
+            )
+        directory = vault.root / AUDIO_DIRNAME
+        directory.mkdir(parents=True, exist_ok=True)
+        target = _unique_path(directory, transcribe.slugify(Path(leaf).stem), suffix)
+        written = 0
+        with target.open("wb") as fh:
+            async for chunk in request.stream():
+                written += len(chunk)
+                fh.write(chunk)
+        if not written:
+            target.unlink(missing_ok=True)
+            raise HTTPException(400, "the upload was empty")
+        job = transcriber.submit(
+            path=target,
+            source=leaf,
+            model=(model or cfg.whisper_model),
+            collection=(collection or transcribe.TRANSCRIPT_COLLECTION),
+            summarize=bool(summarize),
+            keep=True,
+        )
+        return job.as_dict()
+
+    @app.get("/api/transcribe/{job_id}")
+    def transcribe_job(job_id: str):
+        job = transcriber.jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "no such job (jobs do not survive a restart)")
+        return job.as_dict()
+
+    @app.post("/api/transcribe/summarize", status_code=201)
+    async def transcribe_resummarize(payload: dict):
+        """Retry the summary of an existing transcript note.
+
+        The summary is the cheap half and the flaky half, so retrying it must not
+        mean transcribing the recording again -- that would be an hour of GPU work
+        to redo ten seconds of writing.
+        """
+        note = _require_note(payload.get("id"))
+        if not transcript_of(note.body):
+            raise HTTPException(400, "that note has no transcript to summarise")
+        return transcriber.submit_resummarise(note.id).as_dict()
 
     # -- daily notes -------------------------------------------------------
 

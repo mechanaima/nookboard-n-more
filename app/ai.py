@@ -135,6 +135,142 @@ def parse_link_suggestions(text: str, known_titles: Iterable[str], *, exclude: s
 #: List furniture a model may wrap a line in: bullets, checkboxes, numbering.
 _LIST_PREFIX_RE = re.compile(r"^\s*(?:[-*+\u2022]|\[[ xX]\]|\(?\d+[.)])\s*")
 
+#: How much transcript goes to the model in one go.
+#:
+#: A one-hour lecture transcribes to tens of thousands of characters. The local
+#: model runs at ~26 tokens/second, so a single pass is both slow and past the
+#: point where it starts losing the beginning of its own context -- and a summary
+#: that quietly describes only the second half is worse than one that took three
+#: passes. Chunks are summarised in turn, then the notes are combined.
+TRANSCRIPT_CHUNK_CHARS = 6000
+
+#: A ceiling on the finished summary. Long enough for a lecture, short enough
+#: that the top of the note is still a summary rather than a second transcript.
+TRANSCRIPT_SUMMARY_CHARS = 4000
+
+
+def chunk_text(text: str, *, limit: int = TRANSCRIPT_CHUNK_CHARS) -> list[str]:
+    """Split at paragraph boundaries, breaking mid-paragraph only if forced to.
+
+    Transcript paragraphs are already pause-delimited (see
+    `transcribe.group_paragraphs`), so a boundary here is a place the speaker
+    stopped -- the least bad place to cut a thought in half. A single paragraph
+    longer than the whole budget is the one case with nowhere good to cut, and
+    then a sentence boundary is tried first.
+    """
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text or "") if p.strip()]
+    chunks: list[str] = []
+    current = ""
+
+    for para in paragraphs:
+        piece = para
+        while len(piece) > limit:
+            cut = piece.rfind(". ", 0, limit)
+            cut = cut + 1 if cut > limit // 2 else limit
+            head, piece = piece[:cut].strip(), piece[cut:].strip()
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(head)
+        if not piece:
+            continue
+        if current and len(current) + len(piece) + 2 > limit:
+            chunks.append(current)
+            current = piece
+        else:
+            current = f"{current}\n\n{piece}" if current else piece
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def build_transcript_summary_messages(chunk: str, *, index: int, total: int) -> list[dict]:
+    """One part of a transcript.
+
+    `index`/`total` are in the prompt on purpose: a chunk of a lecture reads like
+    a whole document, and a model that thinks it has the whole thing will write
+    an introduction and a conclusion for the middle of a sentence.
+    """
+    return [
+        {
+            "role": "system",
+            "content": (
+                f"You are taking notes on part {index} of {total} of a transcript "
+                "of a recorded talk or lecture. Reply with markdown bullets only: "
+                "what was actually said, in the order it was said, one short line "
+                "each. No preamble, no conclusion, no headings, no 'in this "
+                "section'. Do not add anything that is not in the text. If this "
+                "part is only small talk or logistics, reply with a single dash."
+            ),
+        },
+        {"role": "user", "content": chunk},
+    ]
+
+
+def build_transcript_reduce_messages(notes: Sequence[str]) -> list[dict]:
+    """Combine the per-chunk notes into one summary.
+
+    The system prompt spends most of its words on what not to do, because the
+    failure mode of a local model here is not a wrong summary -- it is a
+    cheerful one that invents an agenda the recording never had.
+    """
+    body = "\n\n".join(f"--- notes {i} ---\n{n}" for i, n in enumerate(notes, 1))
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are writing the summary at the top of a note about a recorded "
+                "talk or lecture, from notes taken part by part. Reply with "
+                "markdown only: two or three sentences of plain prose saying what "
+                "the recording was about, then at most six bullets for the "
+                "specific points worth keeping. No preamble, no headings, no "
+                "restating these instructions, no encouragement. Anything not in "
+                "the notes did not happen -- do not invent topics, names or "
+                "numbers to make the summary read better."
+            ),
+        },
+        {"role": "user", "content": body},
+    ]
+
+
+def parse_transcript_summary(text: str) -> str:
+    """Keep the summary's shape; remove only what would break the note.
+
+    Unlike `parse_summary`, which flattens a day's recap to one paragraph, the
+    bullets and paragraphs here *are* the value: a lecture summary that has been
+    flattened is a worse summary.
+
+    What must not survive is the fence *marker* -- unbalanced, it would swallow
+    the transcript below it -- or a heading, since the section already has one
+    and a model that echoes `## Summary` gives the note two. The content *inside*
+    a fence is kept: local models routinely wrap their whole answer in one, so
+    dropping fenced lines would drop the summary.
+    """
+    lines: list[str] = []
+    for raw in (text or "").splitlines():
+        line = raw.rstrip()
+        if line.strip().startswith("```"):
+            continue
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            # A heading becomes a bold lead-in rather than disappearing: the
+            # text under it is still the model's answer.
+            stripped = f"**{stripped.lstrip('# ').strip()}**"
+        if not stripped and (not lines or not lines[-1]):
+            continue
+        lines.append(stripped)
+
+    while lines and not lines[-1]:
+        lines.pop()
+    summary = "\n".join(lines).strip()
+
+    if len(summary) > TRANSCRIPT_SUMMARY_CHARS:
+        cut = summary[:TRANSCRIPT_SUMMARY_CHARS]
+        stop = max(cut.rfind(".\n"), cut.rfind(". "), cut.rfind("\n"))
+        summary = (cut[: stop + 1] if stop > TRANSCRIPT_SUMMARY_CHARS // 2 else cut).rstrip()
+    return summary
+
 
 # --- prompts --------------------------------------------------------------
 
