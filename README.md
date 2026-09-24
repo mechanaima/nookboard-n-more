@@ -84,16 +84,26 @@ Three things about that are not obvious, and are worth not breaking:
   arithmetic rather than taste: on a dark theme a panel *below* the wall reads
   as a hole rather than a raised surface. The glass tokens are built from
   `--surface1` for that reason. Move the wall and you have to re-measure them.
+- **A breakpoint on the window is not a breakpoint on a column.** The editor is a
+  *column* of the layout, so at a 1200px window it is a 232px pane. The meta grid used
+  to be four fixed fractions with a window media query dropping it to two, which gave
+  every field 56px — narrower than the word COLLECTION — so labels painted over each
+  other and selects showed two letters of their values. It now asks how much room
+  *it* has (`repeat(auto-fit, minmax(min(100px, 100%), 1fr))`), and a label that still
+  does not fit is ellipsised rather than drawn over its neighbour. `check-scroll.mjs`
+  measures it, at the width where it broke.
 - **One recipe per thing.** Tags are `.tag-chip, .card__chip` — one rule, two
   callers. The primary action is one glass button, shared by the board, the
   editor and the sidebar. The pressed filter chip reuses it. Anything written
   twice drifts; two buttons that meant the same thing already had.
 
 The whole visual layer is one hand-written stylesheet —
-`static/css/app.css`, 19 numbered sections (tokens → reset → typography →
+`static/css/app.css`, 24 numbered sections (tokens → reset → typography →
 topbar → sidebar → entries → editor → controls → markdown → calendar → empty
 state → motion → board → mood → responsive → templates → dashboard →
-transcribe → times). There is
+transcribe → times → workspaces → history → bookmarks → note icons →
+preview modal). The index at the top of the file is part of the change: new
+sections go at the **end**, never patched in above another one. There is
 **no framework, no build step, and no CDN**; `marked` is vendored into
 `static/vendor/`.
 

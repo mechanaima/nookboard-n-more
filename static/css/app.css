@@ -699,15 +699,34 @@ textarea:focus-visible,
 }
 
 /* meta grid */
+/* The columns are decided by the space the grid is actually in, not by how wide the
+   window is. It used to be four fixed fractions with a *window* media query dropping
+   it to two columns, which is two different widths being confused for one: the editor
+   is a column of the layout, so at a wide window it can still be a 260px pane -- and
+   four columns in 260px gives each field 56px, which is narrower than the word
+   COLLECTION. The labels then painted over each other and every select showed two
+   letters of its value. `auto-fit` asks the only question that matters here: how much
+   room is there.
+
+   100px is the track minimum, and it is a floor rather than a wish: two of them plus the
+   gap fit inside a 232px pane with room to share, and four fit a 506px pane -- the
+   layout the four-column grid was designed around. (A larger minimum does not merely
+   make the cells wider: when the container cannot hold two tracks at that size, the
+   tracks divide what there is anyway and one of them ends up *under* the minimum, which
+   is a floor that is not one.) The longest label, COLLECTION, is about 90px. */
 .meta-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100px, 100%), 1fr));
   gap: 12px 12px;
   margin-bottom: 16px;
 }
 .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .field--wide { grid-column: span 2; }
+/* A backstop, so the collision above cannot come back at some width nobody tested: a
+   label that does not fit is clipped and says so, rather than painting over its
+   neighbour's name. */
 .field .field-label { padding-left: 1px; }
+.meta-grid .field-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 8. form controls -------------------------------------------------------- */
 input, select, textarea, button { font-family: inherit; color: var(--fg); }
@@ -2964,8 +2983,6 @@ textarea { resize: vertical; line-height: 1.6; }
 
 @media (max-width: 1120px) {
   :root { --sidebar-w: 300px; }
-  .meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .field--wide { grid-column: span 2; }
   /* Below this the board becomes the primary surface and scrolls sideways. */
   .layout.is-wide, .layout.is-wide.is-wide-empty { grid-template-columns: 1fr; }
   .board-columns { grid-template-columns: repeat(5, minmax(230px, 1fr)); }
@@ -2998,7 +3015,8 @@ textarea { resize: vertical; line-height: 1.6; }
   .editor { padding: 18px 14px 48px; }
   .sheet { padding: 20px 18px; border-radius: var(--r-md); }
   .doc-title { font-size: 21px; }
-  .meta-grid { grid-template-columns: 1fr; }
+  /* Below this the grid can genuinely be one column wide, and a field spanning two
+     columns it does not have would overflow the pane. */
   .field--wide { grid-column: span 1; }
   .editor-body[data-mode="split"] { grid-template-columns: 1fr; }
   .editor-body[data-mode="split"] .editor-pane--preview {

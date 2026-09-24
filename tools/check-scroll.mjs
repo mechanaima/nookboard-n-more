@@ -146,6 +146,43 @@ window.__nookReachable = (view) => {
 // dialog whose text runs past the window with nothing to scroll is the same bug in a
 // new place, so it is measured the same way -- one scroller holds the properties, the
 // note and what links here.
+// The same question asked of the editor's meta grid: can you *read* what is there?
+//
+// It used to lay out four columns with a window media query dropping it to two, so at a
+// 1200px window each field was 56px -- narrower than the word COLLECTION -- and the
+// labels painted over each other while every select showed two letters of its value.
+// That is content you cannot read, which is the same failure as content you cannot
+// reach, so it is measured here, at the size where it happened.
+window.__nookLabelsFit = () => {
+  const grid = document.querySelector('.meta-grid');
+  if (!grid) return JSON.stringify({ error: 'no .meta-grid -- no note open in the editor' });
+  const cells = [...grid.children].map((el) => el.getBoundingClientRect());
+  const overflowing = [...grid.querySelectorAll('.field-label')]
+    .filter((l) => l.scrollWidth > l.clientWidth + 1)
+    .map((l) => l.textContent.trim());
+  // No template literals in here: this whole probe is a string inside one, and a stray
+  // backtick ends it early with a syntax error that names nothing useful.
+  const name = (k) => {
+    const l = grid.children[k].querySelector('.field-label');
+    return l ? l.textContent.trim() : '?';
+  };
+  const collisions = [];
+  for (let i = 0; i < cells.length; i++) {
+    for (let j = i + 1; j < cells.length; j++) {
+      const a = cells[i], b = cells[j];
+      if (Math.abs(a.top - b.top) > 4) continue; // different rows
+      if (a.left < b.right - 1 && b.left < a.right - 1) collisions.push(name(i) + '/' + name(j));
+    }
+  }
+  return JSON.stringify({
+    view: 'editor meta',
+    scroller: String(Math.round(grid.getBoundingClientRect().width)) + 'px pane',
+    contentBottom: grid.children.length, viewport: window.innerWidth,
+    slack: 0, overflows: false,
+    reachable: !overflowing.length && !collisions.length,
+    overflowing, collisions,
+  });
+};
 window.__nookPreviewOpens = (id) => {
   location.hash = '#/preview/' + id;
   return true;
@@ -225,6 +262,30 @@ for (const view of tabs) {
       `scroller=${settled.scroller.padEnd(16)} bottom=${settled.contentBottom} ` +
       `viewport=${settled.viewport}${settled.slack ? ` slack=${settled.slack}` : ""}`,
   );
+}
+
+// The editor's meta grid, measured at a 1200px window: the width where a pane of about
+// 232px is normal and four fixed columns used to break it.
+if (SEED) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 1000, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.evaluate(`location.hash = '#/view/board/note/' + ${JSON.stringify(SEED_IDS[0])}`);
+  await sleep(SETTLE_MS);
+  const settled = JSON.parse(await cdp.evaluate("window.__nookLabelsFit()"));
+  if (settled.error) {
+    console.log(`  ??      ${settled.view}: ${settled.error}`);
+    broken++;
+  } else {
+    if (!settled.reachable) broken++;
+    rows.push(settled);
+    console.log(
+      `  ${settled.reachable ? "ok  " : "FAIL"}    ${settled.view.padEnd(12)} ` +
+        `width=${settled.scroller} labels-overflowing=${settled.overflowing.length} ` +
+        `labels-colliding=${settled.collisions.length}` +
+        `${settled.overflowing.length ? " [" + settled.overflowing.join(", ") + "]" : ""}`,
+    );
+  }
 }
 
 // The dialog, over a seeded note with a body long enough to overflow.
