@@ -12,7 +12,7 @@ and optional task state.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
-from datetime import date
+from datetime import date, timedelta
 from enum import Enum
 from typing import Optional
 
@@ -114,6 +114,16 @@ def iso_week(day: date) -> str:
     """
     iso = day.isocalendar()
     return f"{iso.year}-W{iso.week:02d}"
+
+
+def iso_week_bounds(day: date) -> tuple[date, date]:
+    """The Monday and Sunday of the ISO week containing `day`.
+
+    Next to `iso_week` for the same reason: two features need the same week, and
+    the way to keep them from disagreeing is for there to be one answer.
+    """
+    monday = day - timedelta(days=day.weekday())
+    return monday, monday + timedelta(days=6)
 
 
 def stage_for_status(status: Status) -> Stage:

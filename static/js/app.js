@@ -3,6 +3,7 @@ import { parseRapidInput } from "./rapid.js";
 import { monthGrid, shiftMonth } from "./calendar.js";
 import { extractWikilinks, renderWikilinks } from "./wikilink.js";
 import { weekKey } from "./week.js";
+import { splitQueries, spliceQueries } from "./query.js";
 import {
   STAGES, blockedLabel, blocksLabel, completionWarning, depCandidates,
   dropBeforeId, isOpenTask, resolveTaskRef, shiftStage, stageIndex, summaryText,
@@ -53,6 +54,14 @@ const api = {
   async search(q)        { return (await fetch(`/api/search?q=${encodeURIComponent(q)}`)).json(); },
   async calendar(y, m)   { return (await fetch(`/api/calendar/${y}/${m}`)).json(); },
   async backlinks(id)    { return (await fetch(`/api/notes/${encodeURIComponent(id)}/backlinks`)).json(); },
+
+  // -- queries in notes
+  // jsonOrThrow so a query the server refused says so in the note, rather than
+  // rendering as an empty block you would read as "nothing was done".
+  async query(q, on) {
+    const params = new URLSearchParams({ q, on });
+    return jsonOrThrow(await fetch(`/api/query?${params}`));
+  },
 
   // -- templates
   async templates()      { return (await fetch("/api/templates")).json(); },
@@ -177,6 +186,8 @@ async function refresh() {
     // you might act on, so a failure here is an empty list, not an exception.
     api.templates().then((out) => out.templates || []).catch(() => []),
   ]);
+  // Query answers depend on the vault, and the vault is what just changed.
+  queryResults.clear();
   render();
   // The board is derived server-side (positions, blocked-ness), so it is
   // re-fetched rather than recomputed from a possibly-stale client copy.
@@ -419,18 +430,75 @@ function renderEditor() {
   moveInk();
 }
 
-function renderPreview() {
+// Query answers, keyed by the query and the day it was resolved against.
+//
+// Kept between renders so typing in a note does not re-ask the server for what
+// it already knows. Cleared by refresh(), because the answer depends on the
+// vault and the vault is what changed.
+const queryResults = new Map();
+
+function queryKey(text, on) {
+  return `${on}\u0000${text}`;
+}
+
+// The day a note is about. A query resolves relative to this rather than to the
+// clock, so a note written in week 38 says week 38 when you open it in March.
+function noteDate(note) {
+  if (note && note.dates && note.dates.length) return note.dates[0];
+  if (note && note.created) return note.created;
+  return todayIso();
+}
+
+function unansweredQueries(md, on) {
+  const seen = new Set();
+  for (const block of splitQueries(md)) {
+    if (block.text && !seen.has(block.text)) seen.add(block.text);
+  }
+  return [...seen].filter((text) => !queryResults.has(queryKey(text, on)));
+}
+
+async function renderPreview() {
   if (!state.activeId) return;
+  // Captured because the answer being fetched belongs to *this* note: if another
+  // one is opened before it lands, rendering it there would attribute the work
+  // to the wrong day.
+  const resolvesFor = state.activeId;
   const md = $("#note-body").value || "";
   const target = $("#note-preview");
   if (!md.trim()) {
     target.innerHTML = '<p class="preview-empty">Nothing to preview yet — start writing on the left.</p>';
     return;
   }
+
+  const note = state.notes.find((n) => n.id === state.activeId);
+  const on = noteDate(note);
+  const pending = unansweredQueries(md, on);
+
+  // Known answers are spliced in before rendering; unknown ones are left as the
+  // query, so the note never shows a gap where its content should be.
   const titles = new Set(state.notes.map((n) => n.title));
+  const withAnswers = spliceQueries(md, (q) => queryResults.get(queryKey(q, on)));
   // wikilinks must render first so marked doesn't mangle the HTML.
-  const pre = renderWikilinks(md, titles);
+  const pre = renderWikilinks(withAnswers, titles);
   target.innerHTML = window.marked ? window.marked.parse(pre) : escapeHtml(pre);
+
+  if (!pending.length) return;
+
+  await Promise.all(
+    pending.map(async (text) => {
+      const key = queryKey(text, on);
+      try {
+        const out = await api.query(text, on);
+        queryResults.set(key, out.markdown ?? "");
+      } catch (err) {
+        // Cached either way: a failing query must not be retried on every
+        // keystroke, and the note still has to say something about it.
+        queryResults.set(key, `> **Query failed** — ${err.message}`);
+      }
+    })
+  );
+
+  if (state.activeId === resolvesFor) renderPreview();
 }
 
 function setEditorMode(mode) {

@@ -385,10 +385,11 @@ so the two cannot drift apart.
 A note that is a shape for other notes. No new file format: put a note in the
 `templates/` collection and it becomes one.
 
-- **Placeholders**: `{{date}}`, `{{time}}`, `{{week}}`, `{{title}}`. That is the
-  entire vocabulary, and there is no format mini-language — `{{date}}` is always
-  ISO, because a template that renders differently from one day to the next is a
-  template you cannot rely on.
+- **Placeholders**: `{{date}}`, `{{time}}`, `{{week}}`, `{{week_start}}`,
+  `{{week_end}}`, `{{title}}`. That is the entire vocabulary, and there is no
+  format mini-language — `{{date}}` is always ISO, because a template that
+  renders differently from one day to the next is a template you cannot rely
+  on.
 - **Anything else is left exactly as written.** `{{stuf}}` is a typo, and a
   template is a document you wrote: eating it, or guessing at what it meant,
   would quietly change what your notes say. Leaving it visible means you find
@@ -407,6 +408,77 @@ A note that is a shape for other notes. No new file format: put a note in the
   same reason period notes are: a shape for notes is not a thing to be doing.
 - **Manual application can pick the day** (`date`), so a template can be used to
   fill in a day that has already passed.
+
+## Queries
+
+A template expands once and freezes. A query is resolved every time you *look*
+at the note, so it keeps telling the truth as the vault changes. Put one in a
+`nookboard` code block:
+
+````md
+## Finished
+
+```nookboard
+completed this week
+```
+````
+
+| query | what it becomes |
+| --- | --- |
+| `days this week` | the days, linked: `- [[2026-09-21]] Monday` |
+| `completed this week` | what was finished, grouped by the day it was finished |
+| `completed today` | what was finished that day, as a list |
+| `completed on 2026-09-24` | the same, for one named day |
+| `completed in 2026-W38` | the same, for a named ISO week |
+| `open tasks` | everything still open, linked |
+
+Periods: `today`, `yesterday`, `this week`, `last week`, `this month`,
+`last month`, `on <YYYY-MM-DD>`, `in <YYYY-Www>`. Either verb takes any period.
+
+- **The day comes from the note, not the clock.** `this week` in a note dated
+  yesterday means *that* week, so a note about last week still reads as last
+  week when you open it in March. This is what makes the same template usable
+  for any week instead of only the current one.
+- **The answer is never written into your file.** The note keeps the query and
+  only the reading pane resolves it, so the same file opened in Obsidian shows
+  the query rather than a list that was true when it was written.
+- **What counts as finished** is `daily.completed_on` — the same rule the daily
+  and weekly notes use, so a query and a generated note cannot disagree.
+- **A fence you have not closed yet is left alone.** Mid-typing a query is not
+  yet a query, and this is also how you write *about* a query in a note rather
+  than running it. A fence in any other language is never touched.
+- **A query that cannot be read says so** where its answer would have been.
+  Rendering nothing would look like one that failed.
+
+### A weekly template
+
+Days of the week, linked, and what was finished on each — write it once and it
+is right for whichever week you apply it to. A note in `vault/templates/`:
+
+````md
+---
+title: "Week {{week}}"
+tags: [weekly]
+---
+
+# {{week}} · {{week_start}} – {{week_end}}
+
+## Days
+
+```nookboard
+days this week
+```
+
+## Finished
+
+```nookboard
+completed this week
+```
+````
+
+Applied on any day it names the week it lands in, and the two queries then
+answer for that week rather than for today, so a note made in September still
+reads correctly in March.
 
 ## API
 
@@ -431,6 +503,9 @@ A note that is a shape for other notes. No new file format: put a note in the
   placeholders each one uses
 - `POST   /api/templates/apply` `{template, title?, collection?, date?}` →
   make a note from one
+- `GET    /api/query?q=&on=` → resolve one query for the preview to splice in.
+  `on` is the date of the note the query sits in, which is what makes
+  `this week` mean the week that note is about
 - `GET    /api/weekly` → weeks owed a review now, weeks already reviewed, any
   owed-but-unwritten prose and the last error
 - `GET    /api/weekly/{week}` → what that week's note holds and what it is owed
@@ -479,6 +554,13 @@ vault/
 Markdown on disk is the source of truth. The SQLite index powers
 search and calendar aggregation. Delete `vault/.index.sqlite` and
 restart — the app rebuilds it from the `.md` files.
+
+Two tables in it are *not* rebuilt from the files, because they record what has
+already happened rather than what is: `daily_summary_state` and
+`weekly_summary_state` (which days and weeks have been summarised, and what
+failed), and `recurrence_state` (when a recurring note last ran). Deleting the
+index therefore costs you those memories, not your notes — a day that was
+already summarised may be summarised again.
 
 The index is additive-only: columns introduced later (the board's `stage`,
 `blocked_by`, `position`) are `ALTER TABLE`-ed in on open, so an index written by
@@ -569,18 +651,21 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 362 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 395 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),
                  #              daily (stamping/sections/scheduling/recap),
                  #              weekly (ISO weeks/scheduling/rollup/fences),
-                 #              templates (placeholders/titles/applying)
-make test-js     # 104 node:test — rapid-log parsing, calendar maths, wikilinks,
+                 #              templates (placeholders/titles/applying),
+                 #              query (periods/day links/completed/refusals)
+make test-js     # 117 node:test — rapid-log parsing, calendar maths, wikilinks,
                  #              ISO week labels, display helpers, board helpers,
-                 #              mood grid helpers, and that every local import exists
+                 #              mood grid helpers, query fences (finding them,
+                 #              splicing answers, leaving other languages alone),
+                 #              and that every local import exists
 make test-tz     # the same JS suite under UTC, UTC+14, UTC-11 and America/New_York
-./tools/check_render.sh   # 76 DOM assertions in headless Chromium
+./tools/check_render.sh   # 80 DOM assertions in headless Chromium
 ```
 
 `make test` and `make test-js` cover logic; `check_render.sh` covers whether

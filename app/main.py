@@ -28,6 +28,7 @@ from .models import (
 )
 from . import insight
 from . import mood as moodlib
+from . import query as querylib
 from . import templates
 from . import weekly
 from .vault import Vault
@@ -1004,6 +1005,24 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         )
         vault.write(note)
         return note.to_dict()
+
+    # -- queries in notes (API) ---------------------------------------------
+
+    @app.get("/api/query")
+    def run_query(q: str = "", on: Optional[str] = None):
+        """Resolve one query, for the preview to splice into a note.
+
+        `on` is the date of the note the query sits in, so `this week` means the
+        week that note is about rather than the week it happens to be read in.
+        Without it the query resolves against today.
+        """
+        notes, _ = _index()
+        day = _coerce_date(on, "on") if on else date.today()
+        return {
+            "query": q,
+            "on": day.isoformat(),
+            "markdown": querylib.render(q, notes, on=day),
+        }
 
     # Static front-end
     static_dir = Path(__file__).resolve().parent.parent / "static"

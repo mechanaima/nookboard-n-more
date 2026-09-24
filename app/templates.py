@@ -12,7 +12,7 @@ import re
 from datetime import date, datetime
 from typing import Iterable, Optional
 
-from .models import Note, Signifier, Status, iso_week
+from .models import Note, Signifier, Status, iso_week, iso_week_bounds
 
 #: The collection templates live in. A folder, like every other collection, so
 #: there is one rule to remember: put a note in here and it becomes a template.
@@ -20,10 +20,13 @@ TEMPLATES_COLLECTION = "templates"
 
 PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
-#: What a template is allowed to say. Deliberately four things, and no format
-#: mini-language: `{{date}}` is always ISO. A template that renders differently
-#: from one day to the next is a template you cannot rely on.
-KNOWN = ("date", "time", "week", "title")
+#: What a template is allowed to say. Six things, and no format mini-language:
+#: `{{date}}` is always ISO. A template that renders differently from one day to
+#: the next is a template you cannot rely on.
+#:
+#: `week_start`/`week_end` exist because a template about a week has to say
+#: which week, and `{{week}}` alone is a label (`2026-W39`) rather than a span.
+KNOWN = ("date", "time", "week", "title", "week_start", "week_end")
 
 
 def is_template(note: Note) -> bool:
@@ -65,6 +68,9 @@ def expand(
             return now.strftime("%H:%M")
         if name == "week":
             return iso_week(day)
+        if name in ("week_start", "week_end"):
+            monday, sunday = iso_week_bounds(day)
+            return (monday if name == "week_start" else sunday).isoformat()
         if name == "title" and title is not None:
             return title
         return match.group(0)
