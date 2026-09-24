@@ -49,7 +49,10 @@ CREATE TABLE IF NOT EXISTS note_links (
 CREATE INDEX IF NOT EXISTS idx_links_target ON note_links(target_title);
 CREATE TABLE IF NOT EXISTS daily_summary_state (
     day          TEXT PRIMARY KEY,
-    generated_at TEXT NOT NULL
+    generated_at TEXT NOT NULL,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    settled      INTEGER NOT NULL DEFAULT 1,
+    last_error   TEXT
 );
 CREATE TABLE IF NOT EXISTS recurrence_state (
     note_id  TEXT PRIMARY KEY,
@@ -68,6 +71,22 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("pain", "INTEGER"),
     ("completed", "TEXT"),
 )
+
+#: Additive columns for the daily-summary ledger, same reasoning as MIGRATIONS.
+#: `settled` is the load-bearing one: a row used to mean "done, never again",
+#: which conflated a recap that worked with one that never happened. A failed
+#: recap now records its attempt without settling the day, so the next tick
+#: tries again and the prose arrives as soon as the model does.
+DAILY_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("settled", "INTEGER NOT NULL DEFAULT 1"),
+    ("last_error", "TEXT"),
+)
+
+#: How many times a day's recap is retried before it is left with just its list.
+#: Six ticks is half an hour: enough to ride out a model still starting up, not
+#: so many that a machine left overnight keeps asking a model that is not there.
+MAX_RECAP_ATTEMPTS = 6
 
 
 def _extract_wikilink_titles(body: str) -> list[str]:
@@ -89,6 +108,17 @@ class Database:
         for column, decl in MIGRATIONS:
             if column not in have:
                 self.conn.execute(f"ALTER TABLE notes ADD COLUMN {column} {decl}")
+        # Every row written before retries existed was a settled success, which
+        # is what the `settled` default says, so the old table migrates cleanly.
+        daily_have = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(daily_summary_state)")
+        }
+        for column, decl in DAILY_MIGRATIONS:
+            if column not in daily_have:
+                self.conn.execute(
+                    f"ALTER TABLE daily_summary_state ADD COLUMN {column} {decl}"
+                )
 
     def upsert(self, n: Note) -> None:
         """Index a note. The Note is the whole truth — never a partial update.
@@ -212,16 +242,56 @@ class Database:
     # rewrite the note for the rest of the evening.
 
     def mark_daily_generated(self, day: str, at: datetime | None = None) -> None:
+        """Settle a day: it has been summarised and will never be re-run."""
         self.conn.execute(
-            "INSERT INTO daily_summary_state (day, generated_at) VALUES (?, ?) "
-            "ON CONFLICT(day) DO UPDATE SET generated_at=excluded.generated_at",
+            "INSERT INTO daily_summary_state (day, generated_at, settled) "
+            "VALUES (?, ?, 1) "
+            "ON CONFLICT(day) DO UPDATE SET generated_at=excluded.generated_at, "
+            "settled=1",
             (day, (at or datetime.now()).isoformat(timespec="seconds")),
         )
         self.conn.commit()
 
+    def note_daily_attempt(
+        self, day: str, error: str, at: datetime | None = None
+    ) -> bool:
+        """Record a recap that failed, without settling the day.
+
+        Returns whether the day is now settled -- true once the attempts run out,
+        so a model that is never coming back is stopped being asked. Until then
+        the day stays owed, and the next tick tries again: a machine whose model
+        starts at nine gets its recap instead of a permanently prose-less page.
+        """
+        now = (at or datetime.now()).isoformat(timespec="seconds")
+        row = self.conn.execute(
+            "SELECT attempts FROM daily_summary_state WHERE day = ?", (day,)
+        ).fetchone()
+        attempts = (row["attempts"] if row else 0) + 1
+        settled = attempts >= MAX_RECAP_ATTEMPTS
+        self.conn.execute(
+            "INSERT INTO daily_summary_state (day, generated_at, attempts, settled, "
+            "last_error) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(day) DO UPDATE SET generated_at=excluded.generated_at, "
+            "attempts=excluded.attempts, settled=excluded.settled, "
+            "last_error=excluded.last_error",
+            (day, now, attempts, int(settled), error),
+        )
+        self.conn.commit()
+        return settled
+
     def daily_generated_days(self) -> set[str]:
-        rows = self.conn.execute("SELECT day FROM daily_summary_state").fetchall()
+        """Days that will not be re-run: settled successes and given-up failures."""
+        rows = self.conn.execute(
+            "SELECT day FROM daily_summary_state WHERE settled = 1"
+        ).fetchall()
         return {row["day"] for row in rows}
+
+    def daily_retrying_days(self) -> dict[str, str]:
+        """Days written with their list but still waiting on a recap."""
+        rows = self.conn.execute(
+            "SELECT day, last_error FROM daily_summary_state WHERE settled = 0"
+        ).fetchall()
+        return {row["day"]: row["last_error"] for row in rows}
 
     def clear_daily_generated(self, day: str) -> None:
         """Forget that a day was summarised, so a forced refresh can re-run it."""

@@ -264,6 +264,19 @@ what it does when nobody is watching:
 - **Only `Status.COMPLETE` stamps it.** A struck-through note sits in the Done
   column but was abandoned, not finished; a recap that counts abandoned work is
   worse than no recap.
+- **A missed day is caught up for a week**, and at most three days are written
+  per tick so a long absence drains over successive runs instead of firing a
+  burst of model calls. One day was not enough: finish work on Friday, shut the
+  laptop, open it on Monday, and Friday would be dropped for good.
+- **A failed recap is retried, not given up on.** If the model is down the list
+  is still written, and the day stays owed until the recap succeeds — so a model
+  that starts at nine still produces that evening's prose. It stops after six
+  attempts so a model that is never coming back is not asked all night, and
+  `GET /api/daily` reports any day written without its recap under `retrying`.
+- **Daily notes are not tasks.** They are left off the board, which counts what
+  it held back in `hidden_daily`; otherwise every day would drop another date
+  page into To-do to be dismissed by hand. The same rule keeps a daily note from
+  counting itself as the day's work or being read as a recurrence parent.
 - **No note is created for a day with nothing in it.** A page saying "nothing
   happened" is worse than the absence of a page.
 - **The recap is a fenced section, not the whole note.** The day's note is also
@@ -438,7 +451,7 @@ keyword-ish questions and useless at paraphrase.
 ## Tests
 
 ```bash
-make test        # 285 pytest — model, vault, obsidian, foreign-vault, db, api,
+make test        # 290 pytest — model, vault, obsidian, foreign-vault, db, api,
                  #              backlinks, tags, recurring, export, ics, llm, ai,
                  #              deps (graph/order), board (columns/blockers/moves),
                  #              mood (series/streaks/collapse/coercion),

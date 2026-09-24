@@ -24,7 +24,7 @@ from .deps import (
 )
 from .models import (
     MOOD_LEVELS, PAIN_MAX, PAIN_MIN, STAGE_LABELS, Note, Signifier, Stage, Status,
-    coerce_pain, reconcile, stage_for_status, stamp_completed,
+    coerce_pain, is_daily_note_id, reconcile, stage_for_status, stamp_completed,
 )
 from . import mood as moodlib
 from .vault import Vault
@@ -113,9 +113,10 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
     async def _generate_daily(day: date) -> dict:
         """Write a day's summary into that day's own note.
 
-        Deliberately never raises: this normally runs unattended, and a model
-        that is down should leave the day unmarked so the next tick tries again,
-        not tear down the schedule.
+        Deliberately never raises: this normally runs unattended and a model that
+        is down must not tear down the schedule. It writes the list regardless,
+        and leaves the day owed while the recap is failing so the prose still
+        lands if the model turns up later -- bounded by MAX_RECAP_ATTEMPTS.
         """
         notes, _ = _index()
         done = daily.completed_on(notes, day)
@@ -141,13 +142,17 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
 
         section = daily.render(day, done, recap)
         note_id = daily.daily_note_id(day)
-        current = next((n for n in notes if n.id == note_id), None)
+        # Re-read rather than reusing the list from before the model call. That
+        # call takes about a minute, and writing the pre-call body back would
+        # silently drop anything typed into this note while it ran -- a
+        # data-loss window as wide as the generation itself.
+        fresh, _ = _index()
+        current = next((n for n in fresh if n.id == note_id), None)
         if current is not None:
             # Regenerate in place, leaving anything written by hand around it.
             vault.write(replace(current, body=daily.upsert_section(current.body, section)))
         else:
             vault.write(daily.note_for(day, done, recap))
-        db.mark_daily_generated(day.isoformat())
 
         result = {
             "date": day.isoformat(),
@@ -158,7 +163,14 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             "recap": recap,
         }
         if error:
+            # Leave the day owed so the next tick tries again: a model that is
+            # merely late should not cost the day its prose for good. Retries
+            # stop after MAX_RECAP_ATTEMPTS so a model that is never coming back
+            # is not asked all night.
             result["recap_error"] = error
+            result["retrying"] = not db.note_daily_attempt(day.isoformat(), error)
+        else:
+            db.mark_daily_generated(day.isoformat())
         return result
 
     async def _daily_loop() -> None:
@@ -422,11 +434,20 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
 
     @app.get("/api/board")
     def board(collection: Optional[str] = None, tag: Optional[str] = None):
+        """The task board. Generated daily notes are not tasks and are left out.
+
+        Without this, every day drops another date page into To-do for the user
+        to dismiss by hand, forever. The count of what was held back is reported
+        rather than hidden, so the board does not simply look smaller than the
+        vault it is describing.
+        """
         notes, by_id = _index()
         if collection:
             notes = [n for n in notes if n.collection == collection]
         if tag:
             notes = [n for n in notes if tag in n.tags]
+        hidden_daily = sum(1 for n in notes if is_daily_note_id(n.id))
+        notes = [n for n in notes if not is_daily_note_id(n.id)]
 
         columns = []
         for stage in STAGE_ORDER:
@@ -443,6 +464,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             "columns": columns,
             "summary": board_summary(notes, by_id),
             "blocked": [_card(n, by_id) for n in stuck],
+            "hidden_daily": hidden_daily,
         }
 
     @app.post("/api/board/move")
@@ -703,6 +725,10 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             "due_now": now.hour >= cfg.daily_summary_hour >= 0,
             "owed": [d.isoformat() for d in _owed_days(now)],
             "summarised": recorded,
+            # Written with its list but never got a recap, and still being
+            # retried. Surfaced because a page that quietly lacks its prose
+            # reads as a bug in the feature rather than a model that was off.
+            "retrying": db.daily_retrying_days(),
             "last_error": getattr(app.state, "daily_last_error", None),
         }
 

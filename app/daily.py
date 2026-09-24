@@ -19,10 +19,16 @@ from .models import Note, Signifier, Status, is_daily_note_id
 MARK_START = "<!-- nookboard:daily:start -->"
 MARK_END = "<!-- nookboard:daily:end -->"
 
-#: How far back a missed end-of-day run will reach. One day: a laptop closed for
-#: a fortnight should not wake up and spend fifteen model calls summarising
-#: afternoons nobody is going to read.
-CATCHUP_DAYS = 1
+#: How far back a missed day is still summarised. One day is not enough: finish
+#: work on Friday, shut the laptop, open it on Monday, and Friday would be
+#: dropped for good. A week covers the ordinary absence without reaching so far
+#: back that ancient days start sprouting notes.
+CATCHUP_DAYS = 7
+
+#: The most days one tick will summarise. Catching up must not mean summarising a
+#: dozen days in a single burst of model calls; the rest drain on later ticks,
+#: newest first.
+MAX_CATCHUP_RUNS = 3
 
 
 def daily_note_id(day: date) -> str:
@@ -131,6 +137,7 @@ def pending_days(
     """
     blocked = blocked or set()
     days: list[date] = []
+    # Newest first, so the cap below keeps the days that still matter.
     candidates = [today - timedelta(days=n) for n in range(CATCHUP_DAYS + 1)]
     for day in candidates:
         if day in blocked:
@@ -141,7 +148,7 @@ def pending_days(
             # Never invent a note for a day with nothing in it.
             continue
         days.append(day)
-    return sorted(days)
+    return sorted(days[:MAX_CATCHUP_RUNS])
 
 
 def note_for(day: date, done: list[Note], recap: str | None, *, created: date | None = None) -> Note:

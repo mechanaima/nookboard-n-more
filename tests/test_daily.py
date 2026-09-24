@@ -267,6 +267,29 @@ def test_a_day_already_summarised_is_not_owed_again():
     assert owed == []
 
 
+def test_a_weekend_away_does_not_lose_friday():
+    """The realistic absence: finish work on Friday, shut the laptop, open it
+    on Monday. A one-day catch-up window silently drops Friday for good."""
+    friday = TODAY - timedelta(days=3)
+    notes = [_note("a", "Friday work", completed=friday)]
+    owed = daily.pending_days(
+        notes, today=TODAY, hour=22, now=datetime(2026, 9, 23, 23, 0)
+    )
+    assert friday in owed
+
+
+def test_a_long_absence_does_not_fire_a_burst_of_model_calls():
+    """Catching up more days must not mean summarising a dozen in one tick."""
+    notes = [
+        _note(f"d{i}", f"Work {i}", completed=TODAY - timedelta(days=i))
+        for i in range(1, 7)
+    ]
+    owed = daily.pending_days(
+        notes, today=TODAY, hour=22, now=datetime(2026, 9, 23, 23, 0)
+    )
+    assert len(owed) <= daily.MAX_CATCHUP_RUNS
+
+
 def test_catchup_does_not_reach_far_into_the_past():
     """A machine off for a fortnight must not wake up and do fifteen runs."""
     old = TODAY - timedelta(days=10)
@@ -400,6 +423,32 @@ def test_daily_state_reports_the_day(make_client):
     assert body["generated"] is False
 
 
+def test_daily_notes_do_not_clutter_the_board(make_client):
+    """A generated date page is not a task, so it must not become a card.
+
+    Left alone, every day drops another date into To-do for the user to dismiss
+    by hand, forever.
+    """
+    c = make_client([_note("a", "Real work", completed=YESTERDAY)])
+    c.set_script([_chunk(content="A recap.")])
+    c.post("/api/daily/summary", json={"date": YESTERDAY.isoformat()})
+
+    board = c.get("/api/board").json()
+    ids = [card["id"] for col in board["columns"] for card in col["cards"]]
+    assert not [i for i in ids if i.startswith("daily-")], ids
+    # ...but the board admits what it is holding back rather than looking smaller.
+    assert board["hidden_daily"] == 1
+    assert [card["id"] for col in board["columns"] for card in col["cards"]] == ["a"]
+
+
+def test_a_normal_note_still_appears_on_the_board(make_client):
+    """The guard is about generated daily notes, not about notes in general."""
+    c = make_client([_note("a", "Real work", completed=YESTERDAY)])
+    board = c.get("/api/board").json()
+    ids = [card["id"] for col in board["columns"] for card in col["cards"]]
+    assert "a" in ids
+
+
 def test_bad_date_is_rejected(make_client):
     c = make_client()
     assert c.get("/api/daily/not-a-date").status_code == 400
@@ -524,6 +573,45 @@ def test_a_summarised_day_is_not_summarised_again(make_client):
     pending = c.get("/api/daily").json()
     assert YESTERDAY.isoformat() in pending["summarised"]
     assert YESTERDAY.isoformat() not in pending["owed"]
+
+
+def test_an_edit_made_while_the_model_thinks_is_not_clobbered(
+    make_client, tmp_path, monkeypatch
+):
+    """The model call takes about a minute, and the note is written after it.
+
+    Reading the body before the call and writing it back afterwards means an edit
+    made during that minute is silently overwritten -- a data-loss window as wide
+    as the generation itself, not the milliseconds a save usually has.
+    """
+    c = make_client([_note("a", "Real work", completed=YESTERDAY)])
+    note_id = f"daily-{YESTERDAY.isoformat()}"
+
+    # The race needs a note that already exists, which is the refresh case: a
+    # first run creates it *after* the call, so there is nothing to clobber yet.
+    c.set_script([_chunk(content="First pass.")])
+    c.post("/api/daily/summary", json={"date": YESTERDAY.isoformat()})
+
+    from app.llm import LlamaCpp
+
+    async def complete_while_the_user_types(self, messages, **kwargs):
+        path = next(tmp_path.rglob(f"{note_id}.md"))
+        text = path.read_text()
+        path.write_text(
+            text.replace(daily.MARK_START, f"BUY INK\n\n{daily.MARK_START}", 1)
+        )
+        return "A recap."
+
+    monkeypatch.setattr(LlamaCpp, "complete", complete_while_the_user_types)
+    c.set_script([_chunk(content="A recap.")])
+    c.post(
+        "/api/daily/summary",
+        json={"date": YESTERDAY.isoformat(), "refresh": True},
+    )
+
+    after = c.get(f"/api/notes/{note_id}").json()["body"]
+    assert "BUY INK" in after, after
+    assert "A recap." in after
 
 
 def test_refresh_reruns_a_day_already_summarised(make_client):
