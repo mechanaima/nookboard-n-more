@@ -49,7 +49,8 @@ Deep links (shareable, and they survive reload):
 half the editor for it: reading a finished note is a different act from editing one,
 and it wants the whole window. The dialog holds the properties the note carries, the
 note rendered, and what links to it — one scroller, so there is one place to lose your
-place. `Esc` closes it, `Tab` stays inside it, clicking the backdrop closes it, and
+place. The page behind it is hidden while it is open: a reading that leaves the editor
+legible beside it shows you the same note twice. `Esc` closes it, `Tab` stays inside it, clicking the backdrop closes it, and
 focus goes back to the button that opened it. It is a deep link as well
 (`#/preview/<id>`), so a reload lands back in the reading rather than the editor
 behind it.
