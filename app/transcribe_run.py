@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import re
 import shutil
 import tempfile
@@ -35,7 +36,7 @@ from datetime import date
 from pathlib import Path
 from typing import Callable, Iterable
 
-from . import ai, sections, transcribe
+from . import ai, proc, sections, transcribe
 from .llm import LLMError
 from .models import Note, Signifier, Status
 from .transcribe import Media, TranscriptionError
@@ -43,6 +44,9 @@ from .transcribe import Media, TranscriptionError
 #: whisper's stderr progress line, e.g.
 #: `whisper_print_progress_callback: progress =  42%`.
 _PROGRESS_RE = re.compile(r"progress\s*=\s*(\d+)\s*%")
+
+#: A GPU query is a subprocess that either answers at once or is not there.
+VRAM_TIMEOUT = 10
 
 #: Kept audio goes here, dot-prefixed because `Vault.collections()` lists every
 #: directory: a plain `audio/` folder would be offered as an empty notes
@@ -68,6 +72,12 @@ class Job:
     collection: str
     summarize: bool
     keep: bool = False       # is `path` inside the vault (an upload we saved)?
+    #: The GPU could not hold this model, so the work moved to the CPU. Set by
+    #: the run rather than by the request, and on the wire: a job that takes ten
+    #: times as long should say why without anyone having to ask.
+    on_cpu: bool = False
+    #: The sentence explaining that, when it happened.
+    gpu_note: str | None = None
     #: Summarise an existing transcript note instead of transcribing a file.
     #: A retry of the cheap-but-flaky half should not repeat the expensive half.
     only_summary: bool = False
@@ -99,6 +109,8 @@ class Job:
             # this has to be on the wire. Left out, the button never appears.
             "only_summary": self.only_summary,
             "keep": self.keep,
+            "on_cpu": self.on_cpu,
+            "gpu_note": self.gpu_note,
             "duration_s": self.media.duration_s if self.media else None,
             "started": self.started,
             "finished": self.finished,
@@ -119,6 +131,7 @@ class Transcriber:
         taken_ids: Callable[[], Iterable[str]],
         llm=None,
         audio_dir: Path | None = None,
+        vram_probe: Callable[[], transcribe.Vram | None] | None = None,
     ):
         self.cli = cli
         self.models_dir = models_dir
@@ -127,17 +140,50 @@ class Transcriber:
         self.taken_ids = taken_ids
         self.llm = llm
         self.audio_dir = audio_dir
+        #: `None` turns the check off entirely, which is what a test wants and
+        #: what NOOKBOARD_WHISPER_GPU_CHECK=0 gets.
+        self._vram_probe = vram_probe
+        self._vram_reading: transcribe.Vram | None = None
+        self._vram_at: float | None = None
         self.jobs: dict[str, Job] = {}
         self._lock = asyncio.Lock()
 
+    #: A reading is a subprocess and the status view polls. Two seconds is fresh
+    #: enough to be true -- a card does not empty and refill inside the first
+    #: second of a job -- and stale enough that a poll loop is not a process
+    #: launcher.
+    _VRAM_TTL = 2.0
+
+    def vram(self) -> transcribe.Vram | None:
+        """The card, cached for a moment. `None` when it cannot be asked.
+
+        `None` is not "the GPU is fine": it is "nobody looked", and every caller
+        treats it as a reason to leave the job exactly where it was.
+        """
+        if self._vram_probe is None:
+            return None
+        now = time.monotonic()
+        if self._vram_at is not None and (now - self._vram_at) < self._VRAM_TTL:
+            return self._vram_reading
+        self._vram_reading = self._vram_probe()
+        self._vram_at = now
+        return self._vram_reading
+
     # -- job table ----------------------------------------------------------
 
-    def engine(self, wanted: Iterable[str] | None = None) -> transcribe.Engine:
+    def engine(
+        self, wanted: Iterable[str] | None = None, vram: transcribe.Vram | None = None,
+    ) -> transcribe.Engine:
         """What is installed, asked fresh so a new build is picked up without a
-        restart -- and so the UI never reports a cached "ready"."""
+        restart -- and so the UI never reports a cached "ready".
+
+        The VRAM reading comes in from the caller (`vram()` owns the cache), so
+        this stays a lookup of what is on disk and nothing else.
+        """
         return transcribe.resolve_engine(
             cli=self.cli, models_dir=self.models_dir,
             wanted=wanted or (self.default_model,),
+            vram=vram,
         )
 
     def submit_resummarise(self, note_id: str) -> Job:
@@ -158,7 +204,7 @@ class Transcriber:
 
     def submit(
         self, *, path: Path, source: str, model: str, collection: str,
-        summarize: bool = True, keep: bool = False,
+        summarize: bool = True, keep: bool = False, on_cpu: bool = False,
     ) -> Job:
         """Register a job and start it. Returns immediately -- this is minutes
         of work, so the caller gets an id and polls."""
@@ -170,6 +216,7 @@ class Transcriber:
             collection=collection or transcribe.TRANSCRIPT_COLLECTION,
             summarize=summarize,
             keep=keep,
+            on_cpu=on_cpu,
         )
         self.jobs[job.id] = job
         asyncio.create_task(self._run_then_release(job))
@@ -215,6 +262,8 @@ class Transcriber:
             if not engine.cli:
                 raise TranscriptionError("whisper-cli was not found — see the engine line")
 
+            self._decide_device(job, model_path)
+
             with _temp_dir() as work:
                 await self._pipeline(job, engine, model_path, work)
             job.state = "done"
@@ -234,6 +283,30 @@ class Transcriber:
             job.message = "failed"
         finally:
             job.finished = time.time()
+
+    def _decide_device(self, job: Job, model_path: Path) -> None:
+        """GPU or CPU, decided once and said out loud.
+
+        A card that cannot hold the model's weights does not fail this job; it
+        moves it to the CPU and records why. Refusing would be a dead end -- the
+        work is still wanted, it is just wanted somewhere else -- and the
+        alternative, dying six seconds in with a CUDA abort, is what this exists
+        to replace.
+
+        The check only runs when the card can actually be asked: no reading is
+        not a reason to move work off the GPU, so a machine without `nvidia-smi`
+        keeps behaving exactly as it did.
+        """
+        if job.on_cpu:
+            job.gpu_note = "asked for the CPU"
+            return
+        vram = self.vram()
+        if transcribe.fits_on_gpu(vram, model_path):
+            return
+        # `vram` is not None here: `fits_on_gpu` answers True for a card we could
+        # not ask, which is the branch that already returned.
+        job.on_cpu = True
+        job.gpu_note = transcribe.vram_sentence(vram, job.model, model_path)
 
     async def _resummarise(self, job: Job) -> None:
         """Rewrite one note's summary from the transcript already in it."""
@@ -266,11 +339,21 @@ class Transcriber:
         job.progress = _EXTRACT_END
 
         job.state = "transcribing"
-        job.message = f"transcribing with {job.model}"
+        where = " on the CPU" if job.on_cpu else ""
+        job.message = f"transcribing with {job.model}{where}"
         prefix = work / "out"
         result = await _exec(
-            transcribe.whisper_args(engine.cli, model_path, audio, prefix),
+            transcribe.whisper_args(
+                engine.cli, model_path, audio, prefix,
+                # whisper.cpp defaults to four threads, and on the CPU path the
+                # thread count is the only thing setting the pace: an hour of
+                # lecture is the difference between an hour and half of one.
+                threads=(os.cpu_count() or 4) if job.on_cpu else 0,
+                on_cpu=job.on_cpu,
+            ),
             on_line=lambda line: self._on_whisper_line(job, line),
+            vram=self.vram(),
+            model=job.model,
         )
         report = prefix.with_suffix(".json")
         if not report.is_file():
@@ -295,7 +378,8 @@ class Transcriber:
         if match:
             share = min(100, int(match.group(1))) / 100.0
             job.progress = _EXTRACT_END + share * (_TRANSCRIBE_END - _EXTRACT_END)
-            job.message = f"transcribing with {job.model} · {match.group(1)}%"
+            where = " on the CPU" if job.on_cpu else ""
+            job.message = f"transcribing with {job.model}{where} · {match.group(1)}%"
 
     # -- the note -----------------------------------------------------------
 
@@ -315,7 +399,7 @@ class Transcriber:
         body = transcribe.render_body(
             provenance_line=transcribe.provenance(
                 media=job.media, source=source, model=job.model,
-                language=transcription.language, kept=job.keep,
+                language=transcription.language, kept=job.keep, on_cpu=job.on_cpu,
             ),
             transcript=transcript,
         )
@@ -467,13 +551,20 @@ class CmdResult:
     stderr: str
 
 
-async def _exec(args: list[str], *, on_line: Callable[[str], None] | None = None) -> CmdResult:
+async def _exec(
+    args: list[str], *, on_line: Callable[[str], None] | None = None,
+    vram: transcribe.Vram | None = None, model: str = "",
+) -> CmdResult:
     """Run a command, streaming its stderr lines to `on_line`.
 
     stderr is where both ffmpeg's errors and whisper's progress go, so it is read
     line by line as it arrives rather than collected at the end -- that is the
     difference between a progress bar and an hour of silence followed by a
     failure.
+
+    `vram` and `model` are for the explanation only: they are the numbers a
+    failure sentence wants, and this is the layer that still has the command's
+    own output in hand when it has to write one.
     """
     proc = await asyncio.create_subprocess_exec(
         *args,
@@ -500,8 +591,28 @@ async def _exec(args: list[str], *, on_line: Callable[[str], None] | None = None
     )
     code = await proc.wait()
     if code != 0:
-        raise TranscriptionError(_explain_failure(args[0], code, err_lines))
+        raise TranscriptionError(
+            _explain_failure(args[0], code, err_lines, vram=vram, model=model)
+        )
     return CmdResult(returncode=code, stdout="\n".join(out_lines), stderr="\n".join(err_lines))
+
+
+def probe_vram() -> transcribe.Vram | None:
+    """Ask `nvidia-smi` what the card looks like. `None` when it cannot be asked.
+
+    Through `proc.run`, which is the same never-becomes-an-exception contract the
+    workspace and history readers use. On a machine with no `nvidia-smi`, a
+    stopped driver, or a card that is not NVIDIA, this is a check that does not
+    happen -- not a failure worth reporting, and not a reason to change where a
+    job runs.
+    """
+    if shutil.which("nvidia-smi") is None:
+        return None
+    out, _, code = proc.run(transcribe.vram_args(), timeout=VRAM_TIMEOUT)
+    if code != 0:
+        return None
+    apps, _, apps_code = proc.run(transcribe.vram_apps_args(), timeout=VRAM_TIMEOUT)
+    return transcribe.parse_vram(out, apps if apps_code == 0 else "")
 
 
 def _last_line(text: str) -> str:
@@ -511,15 +622,73 @@ def _last_line(text: str) -> str:
     return "no output"
 
 
-def _explain_failure(tool: str, code: int, err_lines: list[str]) -> str:
-    """A sentence for the person, from the tail of the tool's own complaint."""
+#: The negative exit codes a killed process reports, named. "exit -6" was the
+#: whole of what nookboard had to say about the abort that started all this, and
+#: a number is not something a person can act on.
+#:
+#: Names only, no gloss: these are read inside parentheses (`whisper-cli failed
+#: (killed by SIGSEGV): ...`), and a second set of parentheses in there is
+#: unreadable. Whatever the signal means belongs in the sentence, where the
+#: output that produced it is quoted anyway.
+_SIGNALS = {-6: "SIGABRT", -9: "SIGKILL", -11: "SIGSEGV", -15: "SIGTERM"}
+
+#: What a card with no room left says, in the words ggml and CUDA actually print.
+_OUT_OF_MEMORY = (
+    "out of memory",
+    "cuda_error_out_of_memory",
+    "cudamalloc failed",
+)
+
+
+def _exit_words(code: int) -> str:
+    """`exit 1`, or the signal by name when one killed the process."""
+    if code < 0:
+        return f"killed by {_SIGNALS.get(code, f'signal {-code}')}"
+    return f"exit {code}"
+
+
+def _looks_out_of_memory(err_lines: list[str]) -> bool:
+    text = " ".join(err_lines).lower()
+    return any(phrase in text for phrase in _OUT_OF_MEMORY)
+
+
+def _oom_detail(vram: transcribe.Vram | None, model: str) -> str:
+    """The numbers that make an out-of-memory sentence actionable.
+
+    When there is no reading, the sentence still says what to do. When there is
+    one it says who has the card, which is the fact that turns "out of memory"
+    into "stop the model server or pick a smaller model".
+    """
+    named = f" for '{model}'" if model else ""
+    if vram is None:
+        return f"{named} — try a smaller model, or a run with --no-gpu"
+    held = vram.held_by()
+    who = f" ({held} is holding it)" if held else ""
+    return f"{named} — {vram.free_line()}{who}; try a smaller model"
+
+
+def _explain_failure(
+    tool: str, code: int, err_lines: list[str], *,
+    vram: transcribe.Vram | None = None, model: str = "",
+) -> str:
+    """A sentence for the person, from the tail of the tool's own complaint.
+
+    The sentence leads and the tool's own words stay underneath it: the sentence
+    is for whoever handed over the file, the tail is the evidence for anyone who
+    wants to check it. Dropping either is a loss.
+    """
     tail = " · ".join(l for l in err_lines[-3:] if l.strip()) or "no output"
     name = Path(tool).name
     if name.startswith("ffmpeg"):
-        return f"ffmpeg could not read that file (exit {code}): {tail}"
+        return f"ffmpeg could not read that file ({_exit_words(code)}): {tail}"
     if name.startswith("ffprobe"):
-        return f"ffprobe could not read that file (exit {code}): {tail}"
-    return f"{name} failed (exit {code}): {tail}"
+        return f"ffprobe could not read that file ({_exit_words(code)}): {tail}"
+    if _looks_out_of_memory(err_lines):
+        return (
+            f"whisper ran out of GPU memory{_oom_detail(vram, model)}. "
+            f"It said: {tail}"
+        )
+    return f"{name} failed ({_exit_words(code)}): {tail}"
 
 
 @contextlib.contextmanager

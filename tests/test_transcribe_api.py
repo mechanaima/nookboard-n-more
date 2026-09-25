@@ -26,6 +26,18 @@ def _fake_tool(path):
     return path
 
 
+def _fake_model(path, mib):
+    """A model of the size it would really be, with none of the contents.
+
+    Sparse, because the only thing anything asks of it is `st_size` -- and the
+    GPU check compares exactly that against the card, so a 32-byte stand-in
+    would quietly make every machine look roomy. `truncate` costs no disk.
+    """
+    with path.open("wb") as fh:
+        fh.truncate(mib * 1024 * 1024)
+    return path
+
+
 @pytest.fixture
 def transcribe_client(tmp_path, sse_server):
     """An app whose engine is ready, on files that exist only for this test.
@@ -34,12 +46,18 @@ def transcribe_client(tmp_path, sse_server):
     task runs on, and a bare client tears that loop down between requests, so
     every job dies as "cancelled" -- which is a failure that would make the
     failure test below pass for the wrong reason.
+
+    The GPU check is off here for the same reason the whisper knobs point at
+    `tmp_path`: whether a card fits is a question about whoever's machine is
+    running the tests, and one that happened to be busy would turn these red on
+    the very machine the failure was reported from. The check has its own tests
+    below, on a stubbed reading.
     """
     cli = _fake_tool(tmp_path / "whisper-cli")
     models = tmp_path / "models"
     models.mkdir()
-    for name in ("small", "medium"):
-        (models / f"ggml-{name}.bin").write_bytes(b"x" * 32)
+    for name, mib in (("small", 465), ("medium", 1533)):
+        _fake_model(models / f"ggml-{name}.bin", mib)
     base, _set_script = sse_server
     opened: list[TestClient] = []
 
@@ -52,6 +70,7 @@ def transcribe_client(tmp_path, sse_server):
             llm_timeout=30.0,
             whisper_cli=str(cli),
             whisper_models=str(models),
+            whisper_gpu_check=False,
         )
         fields.update(overrides)
         client = TestClient(create_app(settings=Settings(**fields)))
@@ -311,4 +330,135 @@ def test_a_summary_that_fails_after_a_transcript_says_so_without_undoing_it(
     body = vault.read(ident).body
     assert "No summary" in body
     assert "[0:00] hello" in body, "the transcript must survive a failed summary"
+
+
+# --- the card ---------------------------------------------------------------
+
+#: The reading from the run this exists for: 7.0 GiB of an 8.0 GiB card held by
+#: the model server, 644 MiB left, and whisper aborting on a 465 MiB `small`.
+BUSY_CSV = "8151, 7103, 644"
+BUSY_APPS = "llama-server, 7080"
+ROOMY_CSV = "8151, 15, 7732"
+
+
+def _busy(monkeypatch, gpu_csv=BUSY_CSV, apps=BUSY_APPS):
+    """Stub the card. `app.main` imports the probe by name, so this is the seam
+    `create_app` reads when it wires the transcriber."""
+    from app import transcribe
+
+    monkeypatch.setattr(
+        "app.main.probe_vram", lambda: transcribe.parse_vram(gpu_csv, apps)
+    )
+
+
+def _a_file(tmp_path, name="lecture.wav"):
+    source = tmp_path / name
+    source.write_bytes(b"RIFF" + b"\0" * 200)
+    return source
+
+
+def test_a_card_that_cannot_hold_the_model_runs_the_job_on_the_cpu(
+    transcribe_client, tmp_path, monkeypatch
+):
+    """The failure this exists for, end to end.
+
+    Six seconds in, `cudaStreamCreateWithFlags` aborted with "out of memory" and
+    the whole transcription was lost. It is not refused now -- the work is still
+    wanted, it is just wanted elsewhere -- and the reason reaches the job, where
+    someone looking at a list of runs an hour later will still find it.
+    """
+    _busy(monkeypatch)
+    client = transcribe_client(whisper_gpu_check=True)
+
+    status = client.get("/api/transcribe").json()
+    assert status["engine"]["ready"] is True, "a full card is not a broken install"
+    assert status["engine"]["vram"]["free_mib"] == 644
+    assert any("will run on the CPU" in w for w in status["engine"]["warnings"])
+
+    job = client.post("/api/transcribe", json={"path": str(_a_file(tmp_path))}).json()
+    state = _wait(client, job["id"])
+    assert state["on_cpu"] is True
+    assert "0.6 of 8.0 GiB free" in state["gpu_note"]
+    assert "llama-server" in state["gpu_note"]
+    # On the list the view re-reads, not just on the response that started it.
+    listed = [j for j in client.get("/api/transcribe").json()["jobs"] if j["id"] == job["id"]]
+    assert listed and listed[0]["on_cpu"] is True
+
+
+def test_a_roomy_card_is_left_alone(transcribe_client, tmp_path, monkeypatch):
+    """The other side of it: with the card to itself, nothing changes -- no
+    warning, no fall-back, and the numbers still reported."""
+    _busy(monkeypatch, ROOMY_CSV, "")
+    client = transcribe_client(whisper_gpu_check=True)
+
+    status = client.get("/api/transcribe").json()
+    assert status["engine"]["vram"]["free_mib"] == 7732
+    assert status["engine"]["warnings"] == []
+
+    job = client.post("/api/transcribe", json={"path": str(_a_file(tmp_path))}).json()
+    state = _wait(client, job["id"])
+    assert state["on_cpu"] is False
+    assert state["gpu_note"] is None
+
+
+def test_a_machine_with_no_card_to_ask_keeps_working(
+    transcribe_client, tmp_path, monkeypatch
+):
+    """`None` is "nobody looked", not "there is room": no reading, no warning,
+    and the job stays on the GPU. This is the AMD box and the CI runner."""
+    _busy(monkeypatch, "No devices were found", "")
+    client = transcribe_client(whisper_gpu_check=True)
+
+    assert client.get("/api/transcribe").json()["engine"]["vram"] is None
+    job = client.post("/api/transcribe", json={"path": str(_a_file(tmp_path))}).json()
+    assert _wait(client, job["id"])["on_cpu"] is False
+
+
+def test_the_check_can_be_turned_off_entirely(transcribe_client, tmp_path, monkeypatch):
+    """NOOKBOARD_WHISPER_GPU_CHECK=0 is the escape hatch, and it has to be a real
+    one: with it off the probe is never even called."""
+    def _explode():
+        raise AssertionError("the GPU was asked with the check switched off")
+
+    monkeypatch.setattr("app.main.probe_vram", _explode)
+    client = transcribe_client()  # the fixture already sets whisper_gpu_check=False
+    job = client.post("/api/transcribe", json={"path": str(_a_file(tmp_path))}).json()
+    assert _wait(client, job["id"])["on_cpu"] is False
+
+
+def test_the_cpu_can_be_asked_for_per_job(transcribe_client, tmp_path):
+    client = transcribe_client()
+    job = client.post(
+        "/api/transcribe", json={"path": str(_a_file(tmp_path)), "on_cpu": True}
+    ).json()
+    state = _wait(client, job["id"])
+    assert state["on_cpu"] is True
+    assert state["gpu_note"] == "asked for the CPU"
+
+
+def test_the_cpu_can_be_asked_for_by_configuration(transcribe_client):
+    """NOOKBOARD_WHISPER_CPU=1 covers every way in, including the upload path,
+    which takes its knobs as query parameters rather than as JSON."""
+    client = transcribe_client(whisper_cpu=True)
+    resp = client.post("/api/transcribe/upload?name=memo.wav", content=b"RIFF" + b"\0" * 100)
+    assert resp.status_code == 201, resp.text
+    assert _wait(client, resp.json()["id"])["on_cpu"] is True
+
+
+def test_the_form_is_offered_the_ladder_when_nothing_is_downloaded(
+    transcribe_client, tmp_path
+):
+    """An empty dropdown hides the fix; the engine's problems already say which
+    file to fetch, so the ladder is what belongs in it."""
+    empty = tmp_path / "nothing-here"
+    empty.mkdir()
+    payload = transcribe_client(whisper_models=str(empty)).get("/api/transcribe").json()
+    assert payload["engine"]["ready"] is False
+    assert payload["choices"] == ["tiny", "base", "small", "medium"]
+
+
+def test_the_form_offers_only_the_models_that_are_here(transcribe_client):
+    """Offering one that was never downloaded is offering a job that fails."""
+    payload = transcribe_client().get("/api/transcribe").json()
+    assert payload["choices"] == ["small", "medium"], "ladder order, present only"
 

@@ -38,6 +38,13 @@ def test_public_api_operation_contract(tmp_path: Path):
         ("/api/bookmarks/check", "post", "check_bookmarks_api_bookmarks_check_post"),
         ("/api/home", "get", "home_view_api_home_get"),
         ("/api/insight", "get", "insights_api_insight_get"),
+        ("/api/sieve", "get", "sieve_status_api_sieve_get"),
+        ("/api/sieve/scrapes", "post", "start_scrape_api_sieve_scrapes_post"),
+        ("/api/sieve/scrapes", "get", "list_scrapes_api_sieve_scrapes_get"),
+        ("/api/sieve/scrapes/{session_id}", "get", "get_scrape_api_sieve_scrapes__session_id__get"),
+        ("/api/sieve/scrapes/{session_id}/messages", "post", "add_scrape_message_api_sieve_scrapes__session_id__messages_post"),
+        ("/api/sieve/files", "get", "download_sieve_file_api_sieve_files_get"),
+        ("/api/sieve/credits", "get", "sieve_credits_api_sieve_credits_get"),
         ("/api/obsidian", "get", "obsidian_notes_view_api_obsidian_get"),
         ("/api/mood", "get", "mood_series_api_mood_get"),
         ("/api/calendar/{year}/{month}", "get", "calendar_api_calendar__year___month__get"),
@@ -72,7 +79,7 @@ def test_public_api_operation_contract(tmp_path: Path):
         for method, operation in item.items()
     }
 
-    assert len(expected) == 57
+    assert len(expected) == 64
     assert actual == expected, {
         "missing": sorted(expected - actual),
         "unexpected": sorted(actual - expected),

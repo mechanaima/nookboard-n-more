@@ -257,8 +257,9 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
 - **Obsidian interop** — the vault is a valid Obsidian vault; point nookboard at
   any Markdown folder with `NOOKBOARD_VAULT` (see [Obsidian](#obsidian))
 - **Transcription** — hand it a recording (a path, a file, or the microphone)
-  and get a note: whisper.cpp on the GPU for the transcript, the local model for
-  the summary, nothing leaving the machine (see [Transcription](#transcription))
+  and get a note: whisper.cpp for the transcript — on the card, or on the CPU
+  when the card is already busy — the local model for the summary, nothing
+  leaving the machine (see [Transcription](#transcription))
 - **Local AI** — summarize / suggest tags / suggest links / ask your notes,
   streamed from llama.cpp (see [Local AI](#local-ai))
 - **Workspaces** — point a note at a folder of code (`path:`) and it shows what
@@ -277,6 +278,11 @@ Status is updated in the editor pane: `open`, `complete`, `migrated`,
   tag, and back up. Opening the view asks each address whether it is answering and
   shows what it said — with the time it was asked, because a status without one is
   a claim about the past dressed as the present (see [Bookmarks](#bookmarks))
+- **Scraping (sieve)** — hand a plain-language instruction (optionally with a
+  page, expected fields and an output schema) to the sieve API and get the
+  result back, files and all. Off until an api key is configured, and never in
+  the browser or a log (`./tools/sieve-login.py` gets a key; `app/sieve.py` has
+  the rules)
 
 ## Home
 
@@ -756,6 +762,47 @@ at once do not finish sooner, they page — and they live in memory. After a
 restart a job is gone; the note is not. The UI says so rather than guessing that
 it finished.
 
+### When the card is already busy
+
+A shared card is the normal case here rather than the exception, and the way it
+fails is illegible. With 7.0 GiB of an 8.0 GiB card held by the model server, a
+`small` transcription ended like this:
+
+```
+whisper-cli failed (exit -6): cudaStreamCreateWithFlags(&streams[device][stream], 0x01) · ggml-cuda.cu:108
+```
+
+That is `CUDA error: out of memory`, and `ggml-cuda.cu:108` is the abort handler
+rather than the allocation — the line worth reading is the one above it. Two
+things follow, and both are deliberate.
+
+**The engine line reports the card.** `GET /api/transcribe` carries the free and
+total VRAM and who else is holding it, and the view shows it beside the models:
+`GPU 0.6/8.0 GiB free · llama-server has it`. On a machine with no `nvidia-smi`,
+or a card that is not NVIDIA, the reading is `null` and nothing is claimed about
+it — "nobody looked" is not "there is room", and only the second would justify
+moving a job.
+
+**A job that will not fit runs on the CPU.** The weights are not the whole
+question: 644 MiB free and a 465 MiB `small` failed, so the check asks for the
+model's size *plus* 256 MiB of headroom for the KV cache and the compute graph.
+Below that line the job is not refused — it moves to the CPU, with the reason on
+the job and in the note:
+
+```
+_Source: `/x/lecture.m4a` · mov · aac · 52:05 · whisper `small` on the CPU · en_
+```
+
+whisper.cpp defaults to four threads, so that path asks for one per core. The
+summary still runs on the card, which is the point: a model server is exactly
+why the transcript is on the CPU and the writing is not.
+
+**What it does not do.** Nothing moves while the card looks roomy, and the
+reserve is a heuristic off one measurement — which is why the engine line *warns*
+(`… and 'small' needs about 721 MiB — it will run on the CPU`) instead of
+refusing, and why `on_cpu` and `NOOKBOARD_WHISPER_CPU` exist for anyone who wants
+the CPU regardless.
+
 ### Pointing it at whisper.cpp
 
 The engine is found, reported, and overridable. `GET /api/transcribe` says which
@@ -764,13 +811,20 @@ is broken" and "it is running the wrong build" are different problems and only
 one of them is answerable from outside.
 
 ```
-NOOKBOARD_WHISPER_CLI     whisper-cli to run (default: look in the usual places)
-NOOKBOARD_WHISPER_MODELS  directory of ggml-*.bin models
-NOOKBOARD_WHISPER_MODEL   model to use by default (default: small)
+NOOKBOARD_WHISPER_CLI        whisper-cli to run (default: look in the usual places)
+NOOKBOARD_WHISPER_MODELS     directory of ggml-*.bin models
+NOOKBOARD_WHISPER_MODEL      model to use by default (default: small)
+NOOKBOARD_WHISPER_GPU_CHECK  ask nvidia-smi how much of the card is free (default: on)
+NOOKBOARD_WHISPER_CPU        run every transcription on the CPU (default: off)
 ```
 
-Models looked for: `ggml-small.bin` and `ggml-medium.bin`. If nothing is found,
-the endpoint says which variable fixes it instead of failing anonymously.
+Models looked for, smallest first: `ggml-tiny.bin`, `ggml-base.bin`,
+`ggml-small.bin`, `ggml-medium.bin`. The first two are not about quality — they
+are what still fits on a card something else is holding, `tiny` at 75 MB against
+`small`'s 465 MB. The form offers the ones you actually have, and lists this
+ladder when you have none, because an empty dropdown hides the fix. If nothing
+is found, the endpoint says which variable fixes it instead of failing
+anonymously.
 
 ## Times and reminders
 
@@ -1133,12 +1187,16 @@ Transcription (all local: ffmpeg → whisper.cpp → the local model). A job is
 minutes of work, so it is started and then polled:
 
 - `GET    /api/transcribe` → the resolved engine (`cli`, `models`, `ffmpeg`,
-  `ready`, `problems`), the model choices, the collections, the accepted
-  extensions, and the recent jobs
-- `POST   /api/transcribe` `{path, model?, collection?, summarize?}` → a job, or
-  `400` if the path is not there, or `409` naming every reason the engine is not
-  ready
-- `POST   /api/transcribe/upload?name=&model=&collection=&summarize=` → the body
+  `ready`, `problems`, `vram`, `warnings`), the model choices, the collections,
+  the accepted extensions, and the recent jobs. `vram` is the card right now
+  (`free_mib`, `total_mib`, `holders`), `null` when it could not be read;
+  `warnings` are true things that are not refusals, such as a default model that
+  will run on the CPU because the card is full
+- `POST   /api/transcribe` `{path, model?, collection?, summarize?, on_cpu?}` → a
+  job, or `400` if the path is not there, or `409` naming every reason the engine
+  is not ready. `on_cpu` skips the card deliberately; without it a model that
+  will not fit is moved to the CPU rather than refused
+- `POST   /api/transcribe/upload?name=&model=&collection=&summarize=&on_cpu=` → the body
   *is* the file. No multipart: the browser already holds the bytes (a Blob from
   the picker, or the webm the recorder just made), so nothing takes them apart
   again. Kept in `vault/.audio/`, `400` for a type it cannot read or an empty body
@@ -1148,7 +1206,9 @@ minutes of work, so it is started and then polled:
   summary from the transcript already in it
 
 A job is `{id, source, state, progress, message, note_id, error, model,
-summarize, only_summary, keep, duration_s, elapsed_s}`. States: `queued`,
+summarize, only_summary, keep, on_cpu, gpu_note, duration_s, elapsed_s}`.
+`on_cpu` says the work moved off the card, and `gpu_note` says why, in the
+numbers that decided it. States: `queued`,
 `probing`, `extracting`, `transcribing`, `summarising`, `done`, `failed`.
 `progress` is a real fraction — whisper's own `progress = N%` off stderr, mapped
 onto the job — because a bar that lies is worse than no bar.

@@ -330,6 +330,14 @@ check_home "home tab marked active"       'data-view="home"[^>]*class="tab activ
 check_home "layout in wide mode"          'class="layout is-wide'
 check_home "editor collapsed with no note" 'class="layout is-wide is-wide-empty"'
 check_home "vault named in the title"     'id="home-vault"[^>]*>[^<]+<'
+# The day's quote is picked in the browser, so this is the one home check that
+# passes without /api/home: it proves quotes.js imported and paintQuote() ran.
+# The text is asserted as non-empty rather than for a particular quote -- which
+# quote is a function of the day, and a check that pinned one would go red
+# tomorrow.
+check_home "daily quote under the title"   'id="home-quote-text"[^>]*>[^<][^<]*<'
+check_home "quote attributed"             'id="home-quote-by"[^>]*>— '
+check_home_absent "quote not left hidden" 'id="home-quote" class="home-quote hidden"'
 check_home "clock painted"                'id="home-time"[^>]*>[0-9][0-9]:[0-9][0-9]<'
 check_home "greeting painted"             'id="home-greeting"[^>]*>(Good morning|Good afternoon|Good evening|Still up)<'
 check_home "long date painted"            'id="home-date"[^>]*>[A-Z][a-z]+ [0-9]+ [A-Z][a-z]+<'
@@ -378,11 +386,23 @@ check_tr "the summary can be declined"    'id="transcribe-summarize"'
 check_tr "the job list exists"            'id="transcribe-list"'
 check_tr "model choices offered"          '<option value="small"|<option value="medium"'
 check_tr "transcripts is offered as a collection" '<option value="transcripts"'
-check_tr "the empty state shows with no jobs" 'id="transcribe-empty" class="tr-empty"'
 check_tr "what happens to the file is stated" 'Nothing leaves this machine'
+# The vault this runs against is a used one: /api/transcribe comes back with
+# jobs, because a lecture was recorded from the app. So the list is pinned as
+# *painted* -- rows, or the empty state in words when there are none -- rather
+# than as empty, which is what this check asked for until that recording made
+# the assumption false. The two are mutually exclusive by construction:
+# renderTranscribeJobs() hides the empty state whenever it has rows to show, so
+# "both at once" cannot be reached and does not need a pattern.
+check_tr "the job list is painted, rows or the empty state" \
+  'class="tr-job"|id="transcribe-empty" class="tr-empty"'
+# A row is a classed row, and this is the guard on that: a bare <li> inside the
+# list would mean the empty-state paragraph is standing over something it is
+# not describing. (The old name here promised more than the pattern can see --
+# it cannot span the two lines the paragraph and the list sit on.)
+check_tr_absent "no bare row under the list" 'id="transcribe-list" class="tr-list"><li>'
 check_tr_absent "engine line not the placeholder" 'id="transcribe-engine"[^>]*>asking what is installed'
 check_tr_absent "no error shown before anything is tried" 'id="transcribe-error" class="tr-error"'
-check_tr_absent "the empty state is not left under a job" 'id="transcribe-list"><li'
 
 # --- render 6: the workspaces view -----------------------------------------
 # The cards are painted from /api/workspaces after boot, so these are really

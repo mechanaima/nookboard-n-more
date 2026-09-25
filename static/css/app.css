@@ -2887,6 +2887,32 @@ kbd {
   filter: drop-shadow(0 3px 26px color-mix(in srgb, var(--mauve) 50%, transparent));
 }
 
+/* The day's quote, hanging under the name it belongs to. Centred like the hero
+   and deliberately quiet: it is a sentence to notice on the way past, not a
+   headline competing with the vault's own name. It is capped at a measure, not
+   a pixel width, because the quotes run from eight words to fifty and an
+   unbroken line a screen wide is not readable at any length. */
+.home-quote {
+  max-width: 62ch;
+  margin: 0 auto;
+  text-align: center;
+}
+.home-quote.hidden { display: none; }
+.home-quote blockquote {
+  margin: 0;
+  font-size: 14px;
+  font-style: italic;
+  line-height: 1.6;
+  color: var(--fg-dim);
+  text-wrap: pretty;
+}
+.home-quote-by {
+  margin-top: 5px;
+  font-size: 11.5px;
+  letter-spacing: .05em;
+  color: var(--mauve);
+}
+
 /* ---- the command row ---------------------------------------------------- */
 .home-command {
   display: flex;
@@ -3265,6 +3291,9 @@ kbd {
   color: var(--fg-faint);
 }
 .tr-engine.is-bad { color: var(--peach); }
+/* A warning is not a refusal: the job can run, it is just worth knowing before
+   you start one -- so yellow, and not the peach of a thing that cannot run. */
+.tr-engine.is-warn { color: var(--yellow); }
 
 .tr-card {
   display: flex;
@@ -3383,6 +3412,9 @@ kbd {
 
 .tr-job-line { margin: 0; font-size: 12px; color: var(--fg); }
 .tr-job-meta { margin: 0; font-size: 11px; color: var(--fg-faint); }
+/* Why a job is where it is: the card was full, so it ran on the CPU. Set apart
+   from the facts above it by being italic -- an explanation, not a state. */
+.tr-job-why { margin: 0; font-size: 11px; font-style: italic; color: var(--fg-faint); }
 
 .tr-empty { margin: 0; font-size: 12.5px; color: var(--fg-faint); }
 .tr-empty.hidden { display: none; }

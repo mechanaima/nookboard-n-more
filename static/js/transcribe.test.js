@@ -8,8 +8,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  durationText, elapsedText, engineWords, extensionFor, headline, micAvailable,
-  noteHref, percent, pickRecorderMime, recordingName, sourceLabel, stageWords,
+  deviceText, durationText, elapsedText, engineWords, extensionFor, headline,
+  micAvailable, noteHref, percent, pickRecorderMime, recordingName, sourceLabel,
+  stageWords, vramWords,
 } from "./transcribe.js";
 
 test("every state a job can be in has words", () => {
@@ -112,6 +113,56 @@ test("an engine that is not ready shows every problem, not just the first", () =
 test("the engine banner before the answer arrives does not claim readiness", () => {
   assert.equal(engineWords(null).ok, false);
   assert.equal(engineWords(undefined).ok, false);
+});
+
+//: The reading from the run this was written for: 7.0 GiB of an 8.0 GiB card
+//: held by the model server, 644 MiB left.
+const BUSY_VRAM = {
+  total_mib: 8151,
+  used_mib: 7103,
+  free_mib: 644,
+  holders: [{ name: "llama-server", mib: 7080 }],
+};
+
+test("the card is reported in the unit people read it in", () => {
+  assert.equal(vramWords(BUSY_VRAM), "GPU 0.6/8.0 GiB free · llama-server has it");
+  const quiet = vramWords({ total_mib: 8151, used_mib: 15, free_mib: 7732, holders: [] });
+  assert.equal(quiet, "GPU 7.6/8.0 GiB free", "nobody else on it, so nobody is named");
+});
+
+test("a machine with no card to ask says nothing about one", () => {
+  // Not "0.0 GiB free": that is a claim about a card we never read, and it is
+  // the claim that decides whether a job runs on the CPU.
+  assert.equal(vramWords(null), "");
+  assert.equal(vramWords(undefined), "");
+});
+
+test("the engine line carries the card and the warning about the default model", () => {
+  const words = engineWords({
+    ready: true,
+    cli: "/usr/local/bin/whisper-cli",
+    models: ["small", "medium"],
+    ffmpeg: "/usr/bin/ffmpeg",
+    problems: [],
+    vram: BUSY_VRAM,
+    warnings: ["'small' needs about 721 MiB — it will run on the CPU"],
+  });
+  assert.equal(words.ok, true, "a busy card is not a broken install");
+  assert.match(words.line, /GPU 0\.6\/8\.0 GiB free/);
+  assert.match(words.warn, /will run on the CPU/);
+  // The card is on the line once, in the line's own clause. The warning is about
+  // the model, so the two do not say the same thing twice.
+  assert.equal(words.warn.includes("GiB free"), false);
+  // A refusal keeps the warnings field empty: the problems are the detail there.
+  const bad = engineWords({ ready: false, cli: "", models: [], problems: ["no whisper-cli found"] });
+  assert.equal(bad.warn, "");
+});
+
+test("only a run on the CPU is worth saying out loud", () => {
+  assert.equal(deviceText({ on_cpu: true }), "on the CPU");
+  assert.equal(deviceText({ on_cpu: false }), "", "the card is what everyone assumed");
+  assert.equal(deviceText({}), "");
+  assert.equal(deviceText(null), "");
 });
 
 test("a recording is named for the second it was made", () => {

@@ -76,22 +76,48 @@ export function sourceLabel(job) {
   return job.source || "";
 }
 
-//: The engine banner: one line, and whether transcription can run at all.
+//: The card's state, or "" when this machine has no card we can ask. The server
+//: sends MiB because that is what nvidia-smi reports; GiB is the unit people hold
+//: VRAM in, so the conversion happens here, in the one place that reads it.
+//: `has it` names whoever else is on the card -- a number alone cannot say
+//: whether the room is about to come back.
+export function vramWords(vram) {
+  if (!vram) return "";
+  const free = (Number(vram.free_mib) || 0) / 1024;
+  const total = (Number(vram.total_mib) || 0) / 1024;
+  const names = (vram.holders || []).map((held) => held && held.name).filter(Boolean);
+  const who = names.length ? ` · ${names.join(", ")} has it` : "";
+  return `GPU ${free.toFixed(1)}/${total.toFixed(1)} GiB free${who}`;
+}
+
+//: Which device a job ran on. Only the CPU is worth saying out loud: it is the
+//: case a person needs to know about, because it is far slower, and the run on
+//: the card is what everyone assumed anyway.
+export function deviceText(job) {
+  return job && job.on_cpu ? "on the CPU" : "";
+}
+
+//: The engine banner: one line, and whether transcription can run at all. A
+//: warning rides on the same line rather than getting its own -- it is the same
+//: subject, and a second line about the same thing is where the two start to
+//: disagree.
 export function engineWords(engine) {
-  if (!engine) return { ok: false, line: "asking what is installed…", detail: "" };
+  if (!engine) return { ok: false, line: "asking what is installed…", detail: "", warn: "" };
   const models = (engine.models || []).join(", ");
   if (engine.ready) {
     const cli = engine.cli ? engine.cli.split("/").pop() : "whisper-cli";
     return {
       ok: true,
-      line: `${cli} · ${models || "no models"} · all local`,
+      line: [cli, models || "no models", "all local", vramWords(engine.vram)].filter(Boolean).join(" · "),
       detail: engine.cli || "",
+      warn: (engine.warnings || []).join(" · "),
     };
   }
   return {
     ok: false,
     line: "not ready",
     detail: (engine.problems || []).join(" · "),
+    warn: "",
   };
 }
 

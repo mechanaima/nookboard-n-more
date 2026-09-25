@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from app import transcribe
+from app import transcribe, transcribe_run
 from app.transcribe import (
     Media, Paragraph, Segment, TranscriptionError,
 )
@@ -432,3 +432,228 @@ def test_the_tools_get_the_names_the_engine_resolved():
     assert args[0] == "/opt/bin/ffprobe"
     args = transcribe.extract_args(Path("/x/a.mp4"), Path("/tmp/a.wav"), ffmpeg="/opt/bin/ffmpeg")
     assert args[0] == "/opt/bin/ffmpeg"
+
+
+# --- the card, and what a full one costs ------------------------------------
+
+#: What `nvidia-smi --query-gpu=memory.total,memory.used,memory.free --format=csv,
+#: noheader,nounits` and the `--query-compute-apps` call beside it really print,
+#: copied from the run on 25 September 2026 rather than composed here.
+GPU_CSV = "8151, 7103, 644"
+APPS_CSV = "llama-server, 7080"
+
+#: And the tail whisper.cpp printed while that was true: the abort that started
+#: this. `ggml-cuda.cu:108` in it is the GGML_ABORT inside `ggml_cuda_error`,
+#: which is why the obvious line to read is not the one that failed.
+OOM_TAIL = [
+    "CUDA error: out of memory",
+    "  current device: 0, in function stream at "
+    "/home/irving/.hermes/profiles/school/workspace/whisper.cpp/ggml/src/ggml-cuda/common.cuh:1492",
+    "  cudaStreamCreateWithFlags(&streams[device][stream], 0x01)",
+]
+
+
+def _sized_model(tmp_path, name="small", mib=465):
+    """A model file of the size it would really be, and none of the contents.
+
+    Sparse on purpose: the only thing anything asks of it is `st_size`, and
+    writing half a gigabyte of filler to answer a question about a number would
+    be absurd. It is *not* zero-sized -- the check under test compares this
+    number against the card, and an empty stand-in makes every card look roomy.
+    """
+    path = tmp_path / f"ggml-{name}.bin"
+    with path.open("wb") as fh:
+        fh.truncate(mib * 1024 * 1024)
+    return path
+
+
+def test_a_reading_is_read_from_the_numbers_nvidia_smi_prints():
+    vram = transcribe.parse_vram(GPU_CSV, APPS_CSV)
+    assert (vram.total_mib, vram.used_mib, vram.free_mib) == (8151, 7103, 644)
+    assert vram.holders == (("llama-server", 7080),)
+    assert vram.free_line() == "0.6 of 8.0 GiB free"
+    assert vram.held_by() == "llama-server 6.9 GiB"
+
+
+def test_the_biggest_holder_is_named_first_and_by_its_own_name():
+    """`nvidia-smi` reports the process as the path it was started from, and a
+    sentence that says `.../build/bin/llama-server 6.9 GiB is holding it` is a
+    sentence nobody reads. The basename is the thing a person would stop."""
+    vram = transcribe.parse_vram(
+        GPU_CSV,
+        "/home/irving/projects/prismml-llama.cpp/build/bin/llama-server, 7064\n"
+        "small-thing, 40",
+    )
+    assert [name for name, _ in vram.holders] == ["llama-server", "small-thing"]
+    assert vram.held_by() == "llama-server 6.9 GiB, small-thing 0.0 GiB"
+    # A name that was never a path is left exactly as it is.
+    plain = transcribe.parse_vram(GPU_CSV, "python3, 512")
+    assert plain.holders == (("python3", 512),)
+
+
+def test_a_card_we_cannot_ask_is_not_an_error():
+    """No `nvidia-smi`, an AMD card, a driver that answers in prose: a check that
+    does not happen. It must not raise, and it must not claim a card either --
+    the difference between "nobody looked" and "there is room" is what keeps a
+    job on the GPU on a machine with no NVIDIA card at all."""
+    assert transcribe.parse_vram("") is None
+    assert transcribe.parse_vram("No devices were found") is None
+    assert transcribe.parse_vram("memory.total [MiB], memory.used [MiB]") is None
+    assert transcribe.parse_vram("n/a, n/a, n/a") is None
+    # A readable reading with no processes listed is a reading, not a failure.
+    assert transcribe.parse_vram("8151, 15, 7732", "").holders == ()
+
+
+def test_the_reading_that_actually_failed_is_a_cpu_run(tmp_path):
+    """The case this was written from, and the reason the reserve is part of the
+    question: 644 MiB free and a 465 MiB `small` is *not* a fit -- asked the
+    narrow way (`free >= weights`) it would have said yes and aborted again."""
+    model = _sized_model(tmp_path, "small", mib=465)
+    busy = transcribe.parse_vram(GPU_CSV, APPS_CSV)
+    assert transcribe.weights_mib(model) == 465
+    assert transcribe.fits_on_gpu(busy, model) is False
+    assert transcribe.fits_on_gpu(transcribe.parse_vram("8151, 15, 7732"), model) is True
+    # Nobody looked: leave the job where it was.
+    assert transcribe.fits_on_gpu(None, model) is True
+
+
+def test_a_smaller_model_is_what_fits_on_a_busy_card(tmp_path):
+    """Which is the whole reason the ladder grows downwards."""
+    busy = transcribe.parse_vram(GPU_CSV, APPS_CSV)
+    assert transcribe.fits_on_gpu(busy, _sized_model(tmp_path, "tiny", mib=75)) is True
+    assert transcribe.fits_on_gpu(busy, _sized_model(tmp_path, "medium", mib=1533)) is False
+
+
+def test_the_ladder_is_smallest_first_and_the_default_did_not_move():
+    assert transcribe.MODEL_CHOICES == ("tiny", "base", "small", "medium")
+
+
+def test_the_cpu_sentence_names_who_has_the_card(tmp_path):
+    model = _sized_model(tmp_path, "small")
+    said = transcribe.vram_sentence(
+        transcribe.parse_vram(GPU_CSV, APPS_CSV), "small", model
+    )
+    assert "0.6 of 8.0 GiB free" in said
+    assert "llama-server" in said
+    assert "running on the CPU instead" in said
+    # A card with nothing else on it still gets a sentence, just a shorter one.
+    quiet = transcribe.vram_sentence(transcribe.parse_vram("8151, 8151, 0"), "small", model)
+    assert "holding it" not in quiet
+    assert "721" in quiet, "465 MiB of weights and the 256 MiB reserve"
+
+
+def test_a_card_that_will_not_hold_it_says_so_before_the_job(tmp_path):
+    """A warning, not a refusal: the engine is ready and the job runs, on the
+    CPU. Said early because the alternative is finding out from how long it took."""
+    model = _sized_model(tmp_path, "small")
+    busy = transcribe.parse_vram(GPU_CSV, APPS_CSV)
+    warning = transcribe.vram_warning(busy, "small", model)
+    assert warning is not None
+    assert "will run on the CPU" in warning
+    assert "721" in warning, "the reserve it was measured against"
+    # It is rendered next to `vram`, so it must not restate the card: the two
+    # sentences would otherwise sit on one line saying the same thing.
+    assert "llama-server" not in warning
+    assert "GiB free" not in warning
+    roomy = transcribe.parse_vram("8151, 15, 7732")
+    assert transcribe.vram_warning(roomy, "small", model) is None
+    assert transcribe.vram_warning(None, "small", model) is None
+
+
+def test_the_engine_reports_the_card_and_warns_about_the_default_model(tmp_path):
+    """The default model is the one the form starts on, so it is the one whose
+    fit is worth a sentence. A full card is not a broken install."""
+    cli = _fake_tool(tmp_path / "whisper-cli")
+    models = tmp_path / "models"
+    models.mkdir()
+    _sized_model(models, "small")
+    engine = transcribe.available(
+        cli=str(cli), models_dir=models, ffmpeg="ffmpeg", wanted=["small"],
+        vram=transcribe.parse_vram(GPU_CSV, APPS_CSV),
+    )
+    assert engine.ready is True
+    assert engine.problems == ()
+    assert engine.vram.free_mib == 644
+    assert len(engine.warnings) == 1 and "small" in engine.warnings[0]
+    assert engine.as_dict()["vram"]["free_mib"] == 644
+
+    # And with no reading at all, nothing is claimed either way.
+    blind = transcribe.available(
+        cli=str(cli), models_dir=models, ffmpeg="ffmpeg", wanted=["small"],
+    )
+    assert blind.vram is None
+    assert blind.warnings == ()
+    assert blind.as_dict()["vram"] is None
+
+
+def test_the_cpu_run_is_the_same_binary_told_to_leave_the_card_alone(tmp_path):
+    """One install serves both, so a busy card needs no second binary to keep in
+    step with the first."""
+    model = tmp_path / "ggml-small.bin"
+    args = transcribe.whisper_args(
+        "/w/whisper-cli", model, tmp_path / "a.wav", tmp_path / "out", on_cpu=True,
+    )
+    assert "--no-gpu" in args
+    on_gpu = transcribe.whisper_args(
+        "/w/whisper-cli", model, tmp_path / "a.wav", tmp_path / "out",
+    )
+    assert "--no-gpu" not in on_gpu
+    # On that path the thread count is the only thing setting the pace.
+    threaded = transcribe.whisper_args(
+        "/w/whisper-cli", model, tmp_path / "a.wav", tmp_path / "out",
+        threads=8, on_cpu=True,
+    )
+    assert threaded[threaded.index("-t") + 1] == "8"
+
+
+def test_the_note_says_when_it_was_made_on_the_cpu():
+    """A transcript that took forty minutes because the card was busy should say
+    so in the note it lands in, and the ordinary run stays as quiet as it was."""
+    def line(**extra):
+        return transcribe.provenance(
+            media=None, source="/x/a.m4a", model="small", language="en",
+            kept=False, **extra,
+        )
+
+    assert "CPU" not in line()
+    assert "whisper `small` on the CPU" in line(on_cpu=True)
+
+
+def test_the_cuda_abort_that_started_this_is_a_sentence_now():
+    said = transcribe_run._explain_failure(
+        "/w/whisper-cli", -6, OOM_TAIL,
+        vram=transcribe.parse_vram(GPU_CSV, APPS_CSV), model="small",
+    )
+    assert said.startswith("whisper ran out of GPU memory for 'small'")
+    assert "0.6 of 8.0 GiB free" in said
+    assert "llama-server" in said
+    # The tool's own words stay underneath: the sentence is for whoever handed
+    # over the file, the tail is the evidence for anyone checking the sentence.
+    assert "cudaStreamCreateWithFlags" in said
+    assert "out of memory" in said
+
+
+def test_an_out_of_memory_with_no_reading_still_says_what_to_do():
+    said = transcribe_run._explain_failure("/w/whisper-cli", -6, OOM_TAIL, model="small")
+    assert "GPU memory" in said
+    assert "smaller model" in said
+
+
+def test_a_signal_is_named_and_an_ordinary_failure_is_left_alone():
+    """`-6` is what the abort looked like from outside, and "exit -6" is a number
+    nobody can act on. Everything without a signal keeps the sentence it had."""
+    said = transcribe_run._explain_failure("/w/whisper-cli", -6, ["something else"])
+    assert "killed by SIGABRT" in said
+    assert "exit -6" not in said
+    killed = transcribe_run._explain_failure("/w/whisper-cli", -9, ["boom"])
+    assert "killed by SIGKILL" in killed
+    # The second shape a full card produced in the wild: whisper.cpp segfaulted
+    # rather than aborting, on the same card, one line differently.
+    crashed = transcribe_run._explain_failure("/w/whisper-cli", -11, ["Segmentation fault"])
+    assert "killed by SIGSEGV" in crashed
+    assert crashed.count("(") == 1, "no nested parentheses to read through"
+    ffmpeg = transcribe_run._explain_failure(
+        "/usr/bin/ffmpeg", 1, ["Invalid data found when processing input"]
+    )
+    assert ffmpeg.startswith("ffmpeg could not read that file (exit 1):")
+    assert "Invalid data found" in ffmpeg

@@ -44,12 +44,14 @@ from . import ai
 from . import daily
 from . import transcribe
 from .obsidian_vault import ObsidianVault
-from .transcribe_run import AUDIO_DIRNAME, Transcriber, transcript_of
+from .transcribe_run import AUDIO_DIRNAME, Transcriber, probe_vram, transcript_of
 from .llm import LLMError, LlamaCpp
 from .history_api import build_history_router
 from .workspace_api import build_workspace_router
 from .bookmark_api import build_bookmark_router
 from .template_api import build_template_router
+from .sieve_run import SieveClient, tick as sieve_tick
+from .sieve_api import build_sieve_router
 
 
 class NoteIn(BaseModel):
@@ -97,6 +99,16 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
     root = Path(vault_root) if vault_root else cfg.vault
     db = Database(root / ".index.sqlite")
     vault = Vault(root, db=db)
+
+    # sieve is optional: with no key configured the client is None, the poll
+    # loop is never started, and every other feature behaves exactly as it did
+    # before this integration existed. The key is read from the environment or
+    # the gitignored `.env` (see config.apply_env_file).
+    sieve_client = (
+        SieveClient(cfg.sieve_api_key, cfg.sieve_base_url)
+        if cfg.sieve_configured
+        else None
+    )
 
     # First-boot rebuild: if DB is empty but vault has files, rebuild index.
     if not db.all_ids() and any(root.rglob("*.md")):
@@ -314,15 +326,41 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
                 app.state.daily_last_error = f"{type(exc).__name__}: {exc}"
             await asyncio.sleep(TICK_SECONDS)
 
+    # -- sieve scrapes ------------------------------------------------------
+    #
+    # The same loop shape as the daily run: a timer rather than a queue, because
+    # this is a local app and a scrape is minutes of work. Each tick polls the
+    # runs that are actually due (`next_poll_at`, 5s backing off to 30s) so a
+    # restart resumes the run it was already paying for instead of starting a
+    # new one. A sieve outage is recorded, not raised: it must not break the
+    # rest of the app.
+    SIEVE_TICK_SECONDS = 5
+
+    async def _sieve_loop() -> None:
+        while True:
+            try:
+                await sieve_tick(db, sieve_client)
+                app.state.sieve_last_error = None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                app.state.sieve_last_error = f"{type(exc).__name__}: {exc}"
+            await asyncio.sleep(SIEVE_TICK_SECONDS)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        task = None
+        daily_task = None
         if cfg.daily_summary_hour >= 0:
-            task = asyncio.create_task(_daily_loop())
+            daily_task = asyncio.create_task(_daily_loop())
+        sieve_task = None
+        if sieve_client is not None:
+            sieve_task = asyncio.create_task(_sieve_loop())
         try:
             yield
         finally:
-            if task is not None:
+            for task in (daily_task, sieve_task):
+                if task is None:
+                    continue
                 task.cancel()
                 try:
                     await task
@@ -334,6 +372,19 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
     app.state.vault = vault
     app.state.db = db
     app.state.obsidian_vault = ObsidianVault.from_path(cfg.obsidian_vault) if cfg.obsidian_vault else ObsidianVault.disabled()
+    app.state.sieve_last_error = None
+
+    # -- sieve -------------------------------------------------------------
+    # Built from the db, the optional client and the settings, and handed a
+    # reader for the loop's last error so /api/sieve can report a quiet outage.
+    app.include_router(
+        build_sieve_router(
+            db,
+            sieve_client,
+            cfg,
+            last_error=lambda: getattr(app.state, "sieve_last_error", None),
+        )
+    )
 
     @app.get("/api/health")
     def health():
@@ -1034,6 +1085,10 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         taken_ids=lambda: [n.id for n in vault.list_all()],
         llm=llm,
         audio_dir=vault.root / AUDIO_DIRNAME,
+        # The one switch for the whole GPU check: no probe means no reading, no
+        # warning, and no job ever moved off the card. See
+        # NOOKBOARD_WHISPER_GPU_CHECK.
+        vram_probe=probe_vram if cfg.whisper_gpu_check else None,
     )
 
     def _engine() -> transcribe.Engine:
@@ -1041,10 +1096,31 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
 
         Not cached: a whisper build or a model download that lands while the
         server is running should show up, and a stale "ready" is exactly the
-        kind of small lie that costs an hour.
+        kind of small lie that costs an hour. The VRAM reading inside it *is*
+        cached, in `Transcriber.vram()` -- that one is a subprocess, and this
+        endpoint is polled.
         """
         wanted = list(dict.fromkeys([cfg.whisper_model, *transcribe.MODEL_CHOICES]))
-        return transcriber.engine(wanted)
+        return transcriber.engine(wanted, vram=transcriber.vram())
+
+    def _model_choices(engine: transcribe.Engine) -> list[str]:
+        """The models this install can actually run, in ladder order.
+
+        Offering one that was never downloaded is offering a job that fails, so
+        the form lists what is here. The ladder is what shows when *nothing* is
+        here: an empty dropdown hides the fix, while the engine's own problems
+        already say which file to fetch.
+        """
+        present = [name for name in transcribe.MODEL_CHOICES if name in engine.models]
+        return present or list(transcribe.MODEL_CHOICES)
+
+    def _on_cpu(requested: object) -> bool:
+        """Whether this job runs on the CPU: asked for, or configured for.
+
+        One place decides it, so `NOOKBOARD_WHISPER_CPU=1` and an explicit
+        `on_cpu` cannot come to different conclusions.
+        """
+        return bool(cfg.whisper_cpu or requested)
 
     def _unique_path(directory: Path, stem: str, suffix: str) -> Path:
         """`name.webm`, then `name-2.webm`.
@@ -1069,10 +1145,11 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         broken" and "it is running the wrong build with the wrong model", and
         only one of those is answerable from outside.
         """
+        engine = _engine()
         return {
-            "engine": _engine().as_dict(),
+            "engine": engine.as_dict(),
             "model": cfg.whisper_model,
-            "choices": list(transcribe.MODEL_CHOICES),
+            "choices": _model_choices(engine),
             "collection": transcribe.TRANSCRIPT_COLLECTION,
             "collections": list_collections(),
             "extensions": sorted(transcribe.MEDIA_EXTENSIONS),
@@ -1106,6 +1183,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             collection=(payload.get("collection") or transcribe.TRANSCRIPT_COLLECTION),
             summarize=bool(payload.get("summarize", True)),
             keep=False,
+            on_cpu=_on_cpu(payload.get("on_cpu")),
         )
         return job.as_dict()
 
@@ -1116,6 +1194,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         model: str = "",
         collection: str = "",
         summarize: bool = True,
+        on_cpu: bool = False,
     ):
         """Transcribe something that only exists in the browser.
 
@@ -1155,6 +1234,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             collection=(collection or transcribe.TRANSCRIPT_COLLECTION),
             summarize=bool(summarize),
             keep=True,
+            on_cpu=_on_cpu(on_cpu),
         )
         return job.as_dict()
 

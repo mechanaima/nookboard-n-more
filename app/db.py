@@ -9,6 +9,7 @@ app.main on first boot if the DB file is missing or empty.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from datetime import date, datetime, timedelta
@@ -65,6 +66,27 @@ CREATE TABLE IF NOT EXISTS recurrence_state (
     note_id  TEXT PRIMARY KEY,
     last_run TEXT NOT NULL
 );
+-- sieve scrapes. A run is minutes of work and an accepted start spends
+-- credits, so this ledger is the durable half of the integration: the session
+-- id is written here before the response returns, and a crash resumes polling
+-- from it rather than starting a duplicate run. It survives `rebuild_from`,
+-- which only clears the note index.
+CREATE TABLE IF NOT EXISTS sieve_sessions (
+    session_id     TEXT PRIMARY KEY,
+    instruction    TEXT NOT NULL,
+    request_json   TEXT NOT NULL,
+    status         TEXT NOT NULL,
+    turns          INTEGER NOT NULL DEFAULT 0,
+    awaiting_turn  INTEGER,
+    turn_body_json TEXT,
+    poll_delay     REAL NOT NULL DEFAULT 5.0,
+    result_json    TEXT,
+    error          TEXT,
+    next_poll_at   TEXT,
+    created        TEXT NOT NULL,
+    updated        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sieve_pending ON sieve_sessions(status);
 """
 
 #: Columns added after the first release. `CREATE TABLE IF NOT EXISTS` is a
@@ -95,6 +117,20 @@ DAILY_MIGRATIONS: tuple[tuple[str, str], ...] = (
 #: Six ticks is half an hour: enough to ride out a model still starting up, not
 #: so many that a machine left overnight keeps asking a model that is not there.
 MAX_RECAP_ATTEMPTS = 6
+
+
+def _loads(raw: str | None, default):
+    """Decode a stored JSON column, falling back rather than raising.
+
+    The index is disposable; a row somebody hand-edited to nonsense should cost
+    that one value, not the whole read.
+    """
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return default
 
 
 def _extract_wikilink_titles(body: str) -> list[str]:
@@ -351,6 +387,146 @@ class Database:
         """Forget that a week was summarised, so a forced refresh can re-run it."""
         self.conn.execute("DELETE FROM weekly_summary_state WHERE key = ?", (key,))
         self.conn.commit()
+
+    # -- sieve scrapes -----------------------------------------------------
+    # The session id is written before the API response leaves the server, and
+    # it is the whole point of the table: a run that was accepted is minutes of
+    # work and already spent credits, so a restart must resume polling it rather
+    # than start a second one. Nothing here ever re-POSTs a start.
+
+    def save_sieve_session(
+        self,
+        *,
+        session_id: str,
+        instruction: str,
+        request: dict,
+        status: str = "queued",
+        next_poll_at: str | None = None,
+        at: datetime | None = None,
+    ) -> None:
+        now = (at or datetime.now()).isoformat(timespec="seconds")
+        self.conn.execute(
+            """
+            INSERT INTO sieve_sessions
+                (session_id, instruction, request_json, status, turns,
+                 awaiting_turn, turn_body_json, poll_delay, result_json, error,
+                 next_poll_at, created, updated)
+            VALUES (?, ?, ?, ?, 0, NULL, NULL, 5.0, NULL, NULL, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                instruction=excluded.instruction,
+                request_json=excluded.request_json,
+                status=excluded.status,
+                next_poll_at=excluded.next_poll_at,
+                updated=excluded.updated
+            """,
+            (session_id, instruction, json.dumps(request), status, next_poll_at, now, now),
+        )
+        self.conn.commit()
+
+    def get_sieve_session(self, session_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM sieve_sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        return self._sieve_row(row)
+
+    def list_sieve_sessions(self, limit: int = 50) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM sieve_sessions ORDER BY created DESC, session_id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [self._sieve_row(row) for row in rows]
+
+    def pending_sieve_sessions(self) -> list[dict]:
+        """Runs that are still owed a poll, oldest first."""
+        rows = self.conn.execute(
+            "SELECT * FROM sieve_sessions WHERE status IN ('queued', 'running') "
+            "ORDER BY created ASC, session_id ASC"
+        ).fetchall()
+        return [self._sieve_row(row) for row in rows]
+
+    def set_sieve_session(
+        self,
+        session_id: str,
+        *,
+        status: str,
+        turns: int | None = None,
+        poll_delay: float | None = None,
+        payload: dict | None = None,
+        error: str | None = None,
+        next_poll_at: str | None = None,
+        at: datetime | None = None,
+    ) -> None:
+        """Record one poll's outcome.
+
+        `turns`, `poll_delay` and the payload are COALESCEd: a poll that only
+        learns the status must not erase the last answer or reset the backoff.
+        `error` and `next_poll_at` are written as given, because clearing a
+        transient error and scheduling the next poll are exactly the writes a
+        successful poll needs to make.
+        """
+        now = (at or datetime.now()).isoformat(timespec="seconds")
+        result = json.dumps(payload) if payload is not None else None
+        self.conn.execute(
+            """
+            UPDATE sieve_sessions SET
+                status = ?,
+                error = ?,
+                next_poll_at = ?,
+                turns = COALESCE(?, turns),
+                poll_delay = COALESCE(?, poll_delay),
+                result_json = COALESCE(?, result_json),
+                updated = ?
+            WHERE session_id = ?
+            """,
+            (status, error, next_poll_at, turns, poll_delay, result, now, session_id),
+        )
+        self.conn.commit()
+
+    def set_sieve_awaiting_turn(
+        self, session_id: str, awaiting_turn: int, body: dict, at: datetime | None = None
+    ) -> None:
+        """Record a follow-up turn that has been sent but not yet answered.
+
+        Polling stops treating this run as finished until the server's turn
+        count passes `awaiting_turn`; the body is kept so a lost POST can be
+        resent rather than reconstructed from memory.
+        """
+        now = (at or datetime.now()).isoformat(timespec="seconds")
+        self.conn.execute(
+            "UPDATE sieve_sessions SET awaiting_turn = ?, turn_body_json = ?, updated = ? "
+            "WHERE session_id = ?",
+            (awaiting_turn, json.dumps(body), now, session_id),
+        )
+        self.conn.commit()
+
+    def clear_sieve_awaiting_turn(self, session_id: str, at: datetime | None = None) -> None:
+        now = (at or datetime.now()).isoformat(timespec="seconds")
+        self.conn.execute(
+            "UPDATE sieve_sessions SET awaiting_turn = NULL, turn_body_json = NULL, "
+            "updated = ? WHERE session_id = ?",
+            (now, session_id),
+        )
+        self.conn.commit()
+
+    @staticmethod
+    def _sieve_row(row: sqlite3.Row | None) -> dict | None:
+        if row is None:
+            return None
+        return {
+            "session_id": row["session_id"],
+            "instruction": row["instruction"],
+            "request": _loads(row["request_json"], {}),
+            "status": row["status"],
+            "turns": row["turns"],
+            "awaiting_turn": row["awaiting_turn"],
+            "turn_body": _loads(row["turn_body_json"], None),
+            "poll_delay": row["poll_delay"],
+            "result": _loads(row["result_json"], None),
+            "error": row["error"],
+            "next_poll_at": row["next_poll_at"],
+            "created": row["created"],
+            "updated": row["updated"],
+        }
 
     def run_recurring(self, today: date) -> list[Note]:
         """For each note with recurrence, instantiate due dates up to `today`.

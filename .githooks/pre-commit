@@ -1,0 +1,62 @@
+#!/bin/sh
+# pre-commit — never let a JS syntax error into the tree.
+#
+# `static/js/app.js` is one ES module with no build step: a single stray
+# statement (e.g. one inserted inside an object literal) makes the WHOLE app
+# fail to parse, and every view goes blank while the server looks healthy.
+# That is the one failure this repo must never ship, and it is cheap to catch
+# at the door instead of in the browser.
+#
+# An agent that skips `make check` cannot skip this: a non-parsing file is a
+# hard block on commit. It only parses; it does not run the suites (too slow
+# for a pre-commit) — run `make check` for those.
+#
+# NOTE: the copy-to-.mjs is load-bearing. `node --check file.js` misreports a
+# perfectly valid ES module as CommonJS (`Unexpected token 'export'`), so we
+# always check under a `.mjs` extension.
+
+set -u
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-commit: node not found; cannot verify JS — commit blocked"
+  echo "            (install node, or commit from a machine that has it)"
+  exit 1
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+fail=0
+checked=0
+
+# Changed-but-not-yet-staged files, and staged ones — cover both.
+files() {
+  git diff --name-only --cached --diff-filter=ACM 2>/dev/null
+  git diff --name-only --diff-filter=ACM 2>/dev/null
+}
+
+for f in $(files | sort -u); do
+  case "$f" in
+    *.js)
+      [ -f "$f" ] || continue
+      cp "$f" "$tmp/_check.mjs"
+      if ! node --check "$tmp/_check.mjs" >/dev/null 2>"$tmp/_err"; then
+        echo "pre-commit: $f does not parse:"
+        sed 's/^/    /' "$tmp/_err"
+        fail=1
+      else
+        checked=$((checked + 1))
+      fi
+      ;;
+  esac
+done
+
+if [ "$fail" -ne 0 ]; then
+  echo
+  echo "Commit blocked: a JavaScript file does not parse."
+  echo "Fix it, then run: make check"
+  exit 1
+fi
+
+echo "pre-commit: $checked JS file(s) parse OK"
+exit 0

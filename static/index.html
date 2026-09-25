@@ -141,6 +141,16 @@
           <h1 id="home-vault" class="home-title">nookboard</h1>
         </header>
 
+        <!-- The day's quote, under the vault's own name. The list lives in
+             static/js/quotes.js and the day is read from this machine's clock,
+             because that is the clock the greeting above it already reads.
+             Hidden until painted, so a bare em dash never stands in for a
+             sentence nobody has chosen yet. -->
+        <figure id="home-quote" class="home-quote hidden">
+          <blockquote id="home-quote-text"></blockquote>
+          <figcaption id="home-quote-by" class="home-quote-by"></figcaption>
+        </figure>
+
         <div class="home-command">
           <label class="home-search">
             <svg class="home-search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">

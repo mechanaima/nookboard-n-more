@@ -34,10 +34,12 @@ from typing import Iterable, Sequence
 #: gets a lecture a week does not bury everything else.
 TRANSCRIPT_COLLECTION = "transcripts"
 
-#: The models offered. `small` is the default because it is the one that finishes
-#: a lecture while you are still in the room; `medium` is there for a recording
-#: you care about enough to wait for.
-MODEL_CHOICES = ("small", "medium")
+#: The models offered, smallest first. `small` is the default because it is the
+#: one that finishes a lecture while you are still in the room; `medium` is there
+#: for a recording you care about enough to wait for. `tiny` and `base` are not
+#: about quality -- they are what still fits on a card that something else is
+#: already holding (see `fits_on_gpu`).
+MODEL_CHOICES = ("tiny", "base", "small", "medium")
 
 #: The id prefix. `models.is_transcript_note_id` owns this pattern -- don't
 #: re-spell it here, or the guard and the producer drift and the note quietly
@@ -190,12 +192,20 @@ def extract_args(src: Path, dest: Path, *, ffmpeg: str = "ffmpeg") -> list[str]:
 
 def whisper_args(
     cli: str, model_path: Path, audio: Path, out_prefix: Path, *, threads: int = 0,
+    on_cpu: bool = False,
 ) -> list[str]:
-    """whisper-cli, asked for its JSON report at a known path."""
+    """whisper-cli, asked for its JSON report at a known path.
+
+    `on_cpu` is `--no-gpu`: one build serves both, so a machine whose card is
+    busy needs no second install and no second binary to keep in step. `threads`
+    matters most on that path, where it is the only thing that sets the pace.
+    """
     args = [
         cli, "-m", str(model_path), "-f", str(audio),
         "-oj", "-of", str(out_prefix), "-l", "auto",
     ]
+    if on_cpu:
+        args.append("--no-gpu")
     if threads > 0:
         args += ["-t", str(threads)]
     return args
@@ -312,6 +322,166 @@ def transcript_markdown(paragraphs: Sequence[Paragraph]) -> str:
     return "\n".join(lines).strip()
 
 
+# -- the GPU -----------------------------------------------------------------
+
+#: Room a model needs beyond its own weights: the KV cache, the compute graph
+#: and cuBLAS' workspaces are all allocated on top of the file's size. Measured
+#: rather than guessed -- with 644 MiB free a 465 MiB `small` aborted inside
+#: `cudaStreamCreateWithFlags` before it transcribed a second, and 644 MiB is
+#: what this headroom is meant to keep a job away from. It is a heuristic bounded
+#: by one measurement, which is why the borderline case warns instead of refusing.
+VRAM_HEADROOM_MIB = 256
+
+
+@dataclass(frozen=True)
+class Vram:
+    """What the card looks like right now, and who else is on it."""
+
+    total_mib: int
+    used_mib: int
+    free_mib: int
+    #: `(process name, MiB)` for whatever else holds the card, biggest first.
+    holders: tuple[tuple[str, int], ...] = ()
+
+    def as_dict(self) -> dict:
+        return {
+            "total_mib": self.total_mib,
+            "used_mib": self.used_mib,
+            "free_mib": self.free_mib,
+            "holders": [{"name": name, "mib": mib} for name, mib in self.holders],
+        }
+
+    def free_line(self) -> str:
+        """`0.6 of 8.0 GiB free` -- GiB, the unit people read VRAM in."""
+        return f"{self.free_mib / 1024:.1f} of {self.total_mib / 1024:.1f} GiB free"
+
+    def held_by(self) -> str:
+        """Who else has the card, or `""` when nobody does."""
+        return ", ".join(f"{name} {mib / 1024:.1f} GiB" for name, mib in self.holders)
+
+
+def vram_args() -> list[str]:
+    """`nvidia-smi`, asked for three numbers and nothing else.
+
+    `noheader,nounits` so the parser reads `8151, 15, 7732` rather than a sentence
+    about MiB: the header is what changes between driver versions, and it is the
+    part worth not depending on.
+    """
+    return [
+        "nvidia-smi",
+        "--query-gpu=memory.total,memory.used,memory.free",
+        "--format=csv,noheader,nounits",
+    ]
+
+
+def vram_apps_args() -> list[str]:
+    """The same tool, asked which processes are on the card."""
+    return [
+        "nvidia-smi",
+        "--query-compute-apps=process_name,used_memory",
+        "--format=csv,noheader,nounits",
+    ]
+
+
+def _mib(value: str) -> int | None:
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_vram(gpu_csv: str, apps_csv: str = "") -> Vram | None:
+    """Read `nvidia-smi`'s answers, or `None` for a machine we cannot read.
+
+    Never raises. A card we cannot ask is not a problem to report: it is a check
+    that does not happen, and every sentence that uses these numbers is written
+    so it can still be said without them.
+    """
+    first = next((line for line in (gpu_csv or "").splitlines() if line.strip()), "")
+    cells = first.split(",")
+    if len(cells) < 3:
+        return None
+    total, used, free = _mib(cells[0]), _mib(cells[1]), _mib(cells[2])
+    if total is None or used is None or free is None:
+        return None
+    holders: list[tuple[str, int]] = []
+    for row in (apps_csv or "").splitlines():
+        parts = row.split(",")
+        if len(parts) < 2:
+            continue
+        # `nvidia-smi` reports the process as the path it was started from, so a
+        # sentence about it reads ".../build/bin/llama-server 6.9 GiB is holding
+        # it". The basename is the name of the thing a person would stop.
+        name = Path(parts[0].strip()).name
+        mib = _mib(parts[1])
+        if name and mib is not None:
+            holders.append((name, mib))
+    holders.sort(key=lambda item: item[1], reverse=True)
+    return Vram(total_mib=total, used_mib=used, free_mib=free, holders=tuple(holders))
+
+
+def weights_mib(model_path: Path) -> int:
+    """The model file's own size: the floor of what a run has to fit."""
+    try:
+        return int(model_path.stat().st_size // (1024 * 1024))
+    except OSError:
+        return 0
+
+
+def gpu_reserve_mib(model_path: Path) -> int:
+    """What a run of this model needs on top of whatever else is on the card."""
+    return weights_mib(model_path) + VRAM_HEADROOM_MIB
+
+
+def fits_on_gpu(vram: Vram | None, model_path: Path) -> bool:
+    """Whether a run of this model can be expected to fit.
+
+    The weights alone are not the answer, and the reading that settled this is
+    the one this was written from: 644 MiB free, a 465 MiB `small`, and a CUDA
+    abort inside `cudaStreamCreateWithFlags` six seconds later. So the headroom
+    is part of the question rather than a refinement of the answer.
+
+    It is a heuristic bounded by that one measurement, and it is asymmetric on
+    purpose: being wrong towards the CPU costs minutes, being wrong towards the
+    GPU costs the whole transcription. A card we could not ask answers `True` --
+    no reading is not a reason to move work off the GPU.
+    """
+    if vram is None:
+        return True
+    return vram.free_mib >= gpu_reserve_mib(model_path)
+
+
+def vram_warning(vram: Vram | None, model_name: str, model_path: Path) -> str | None:
+    """A sentence when a run of this model will not fit, else `None`.
+
+    Not a refusal -- the job still runs, it runs on the CPU -- but said before
+    you start one, because `available()` is the only place that gets to say it
+    early, and the alternative is finding out from how long it took.
+
+    Deliberately says nothing about the card: this is rendered beside `vram`,
+    which is where the free memory and the process holding it are stated, and a
+    second sentence repeating them is how one line becomes two that say the same
+    thing. It is a sentence about the *model*. (`vram_sentence` is the other way
+    round on purpose -- a job's note has no card fact next to it to lean on.)
+    """
+    if vram is None or fits_on_gpu(vram, model_path):
+        return None
+    return (
+        f"'{model_name}' needs about {gpu_reserve_mib(model_path)} MiB — "
+        "it will run on the CPU"
+    )
+
+
+def vram_sentence(vram: Vram, model_name: str, model_path: Path) -> str:
+    """Why this job is not on the GPU, in one line, with the numbers in it."""
+    held = vram.held_by()
+    who = f" ({held} is holding it)" if held else ""
+    return (
+        f"the GPU has {vram.free_line()}{who}, and '{model_name}' needs about "
+        f"{gpu_reserve_mib(model_path)} MiB — running on the CPU instead"
+    )
+
+
 # -- availability ------------------------------------------------------------
 
 
@@ -324,6 +494,12 @@ class Engine:
     models: dict[str, Path]
     ffmpeg: str
     problems: tuple[str, ...]
+    #: The card, when this machine has one we can ask. `None` means the check did
+    #: not happen -- not that the GPU is fine.
+    vram: Vram | None = None
+    #: True things that are not refusals: the install is complete and the job can
+    #: run, but a person would want to know before starting it.
+    warnings: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         return {
@@ -332,6 +508,8 @@ class Engine:
             "models": sorted(self.models),
             "ffmpeg": self.ffmpeg,
             "problems": list(self.problems),
+            "warnings": list(self.warnings),
+            "vram": self.vram.as_dict() if self.vram is not None else None,
         }
 
 
@@ -398,11 +576,19 @@ def default_models_dir(cli: str) -> Path:
     return Path.home() / "whisper.cpp" / "models"
 
 
-def resolve_engine(*, cli: str = "", models_dir: str | Path = "", wanted: Sequence[str] = ()) -> Engine:
-    """Find the pieces and report them. The one entry point the app calls."""
+def resolve_engine(
+    *, cli: str = "", models_dir: str | Path = "", wanted: Sequence[str] = (),
+    vram: Vram | None = None,
+) -> Engine:
+    """Find the pieces and report them. The one entry point the app calls.
+
+    `vram` is passed in rather than taken here: finding an install is a question
+    about this machine's files, asking the card is a question about right now,
+    and only one of the two is worth caching.
+    """
     resolved_cli = resolve_cli(cli)
     directory = Path(models_dir).expanduser() if models_dir else default_models_dir(resolved_cli)
-    return available(cli=resolved_cli, models_dir=directory, wanted=wanted)
+    return available(cli=resolved_cli, models_dir=directory, wanted=wanted, vram=vram)
 
 
 def find_model(models_dir: Path, name: str) -> Path | None:
@@ -415,11 +601,16 @@ def find_model(models_dir: Path, name: str) -> Path | None:
 
 def available(
     *, cli: str, models_dir: Path, ffmpeg: str = "ffmpeg", wanted: Sequence[str] = (),
+    vram: Vram | None = None,
 ) -> Engine:
     """Look for the pieces, and say plainly which are missing.
 
     Each failure line names the environment variable that fixes it: people do
     not guess their way to `NOOKBOARD_WHISPER_CLI` from "transcription failed".
+
+    `vram` is a reading, passed in rather than taken here, so this stays a
+    function of its arguments: the layer that runs processes is the layer that
+    asks the card.
     """
     problems: list[str] = []
     cli_path = resolve_tool(cli, default="whisper-cli")
@@ -454,12 +645,26 @@ def available(
         else:
             problems.append("ffmpeg is not on PATH — it is what reads video and m4a")
 
+    warnings: list[str] = []
+    # The model the form starts on is the first name asked for (`main` puts the
+    # configured default there), so it is the one whose fit is worth a sentence.
+    # Naming a *smaller* model is what the warning already suggests; naming a
+    # bigger one would be telling people about a job they did not ask for.
+    if vram is not None and wanted:
+        default_model = models.get(wanted[0])
+        if default_model is not None:
+            warning = vram_warning(vram, wanted[0], default_model)
+            if warning:
+                warnings.append(warning)
+
     return Engine(
         ready=not problems,
         cli=cli_path,
         models=models,
         ffmpeg=ffmpeg_path,
         problems=tuple(problems),
+        vram=vram,
+        warnings=tuple(warnings),
     )
 
 
@@ -476,17 +681,22 @@ class TranscriptionError(RuntimeError):
 
 def provenance(
     *, media: Media | None, source: str, model: str, language: str, kept: bool,
+    on_cpu: bool = False,
 ) -> str:
     """One line saying where this came from, in the note itself.
 
     Deliberately in the body and not in frontmatter: `Note` has a fixed set of
     keys and a new one would not survive a rewrite, so metadata the app cannot
     promise to keep is metadata the app should not claim.
+
+    The device is named only when it is *not* the GPU. A transcript that took
+    forty minutes because the card was busy should say so in the note it lands
+    in, and the ordinary run should stay as quiet as it was.
     """
     bits = [f"Source: `{source}`"]
     if media is not None:
         bits.append(media.describe())
-    bits.append(f"whisper `{model}`")
+    bits.append(f"whisper `{model}`" + (" on the CPU" if on_cpu else ""))
     if language and language != "unknown":
         bits.append(language)
     if kept and media is None:

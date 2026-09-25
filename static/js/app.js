@@ -23,10 +23,11 @@ import {
   BOARD_TILES, clockTime, greeting, longDate, statTiles, todayAction, todayLine,
   trimmedMonth,
 } from "./home.js";
+import { attribution, quoteOfTheDay } from "./quotes.js";
 import { splitQueries, spliceQueries } from "./query.js";
 import {
-  durationText, elapsedText, engineWords, extensionFor, headline, micAvailable,
-  noteHref, percent, pickRecorderMime, recordingName, sourceLabel,
+  deviceText, durationText, elapsedText, engineWords, extensionFor, headline,
+  micAvailable, noteHref, percent, pickRecorderMime, recordingName, sourceLabel,
 } from "./transcribe.js";
 import {
   STAGES, blockedLabel, blocksLabel, completionWarning, depCandidates,
@@ -2676,6 +2677,24 @@ function paintClock() {
   host.textContent = greeting(now.getHours());
   $("#home-time").textContent = clockTime(now);
   $("#home-date").textContent = longDate(now);
+  // The quote is repainted with the clock rather than once at boot, so the one
+  // thing on this view that changes by itself at midnight does so without a
+  // reload. It is a pure function of the date, so repainting costs nothing.
+  paintQuote(now);
+}
+
+// The day's quote, under the vault's name. Picked here and not by the server:
+// the day is this machine's day, the same clock the time beside it reads.
+function paintQuote(now = new Date()) {
+  const host = $("#home-quote");
+  if (!host) return;
+  const quote = quoteOfTheDay(now);
+  if (!quote) return;
+  $("#home-quote-text").textContent = quote.text; // textContent: a quote is text
+  const by = $("#home-quote-by");
+  by.textContent = attribution(quote);
+  by.title = quote.role || ""; // who they were, when the line is too short to say
+  host.classList.remove("hidden");
 }
 
 function paintTiles(host, tiles) {
@@ -2919,8 +2938,13 @@ function transcribeError(message) {
 function renderEngineLine(engine) {
   const words = engineWords(engine);
   const line = $("#transcribe-engine");
-  line.textContent = words.ok ? words.line : `${words.line} — ${words.detail}`;
+  const said = words.ok ? words.line : `${words.line} — ${words.detail}`;
+  // A warning is not a refusal: the job can run, it is just worth knowing before
+  // you start one. Same line, so the banner stays the one place the engine and
+  // the card are described.
+  line.textContent = words.warn ? `${said} — ${words.warn}` : said;
   line.classList.toggle("is-bad", !words.ok);
+  line.classList.toggle("is-warn", Boolean(words.ok && words.warn));
 }
 
 function fillTranscribeOptions(status) {
@@ -2980,11 +3004,24 @@ function jobRow(job) {
 
   const meta = document.createElement("p");
   meta.className = "tr-job-meta";
-  meta.textContent = [job.summarize ? "" : "no summary", job.model, durationText(job.duration_s)]
+  meta.textContent = [
+    job.summarize ? "" : "no summary",
+    job.model,
+    deviceText(job),
+    durationText(job.duration_s),
+  ]
     .filter(Boolean)
     .join(" · ");
 
   li.append(head, bar, line, meta);
+  // Why this job is where it is -- the CPU fall-back, in the job's own words.
+  // Quieter than the line above it: it is an explanation, not a state.
+  if (job.gpu_note) {
+    const why = document.createElement("p");
+    why.className = "tr-job-why";
+    why.textContent = job.gpu_note;
+    li.append(why);
+  }
   return li;
 }
 
@@ -4277,7 +4314,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   $("#home-month-prev").addEventListener("click", () => shiftHomeMonth(-1));
   $("#home-month-next").addEventListener("click", () => shiftHomeMonth(1));
-  // The clock is the one card that ages on its own.
+  // The clock is the one card that ages on its own, and the quote ages with
+  // it. Painted once here so the hero is complete before /api/home lands:
+  // nothing about the quote needs the vault.
+  paintQuote();
   setInterval(paintClock, 20000);
 
   // -- dependencies
