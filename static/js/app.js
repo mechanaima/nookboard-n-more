@@ -298,6 +298,7 @@ const state = {
   // -- board
   board: null,             // last /api/board payload
   boardCollection: "",     // "" = all collections
+  boardTagFilter: null,    // tag filter string
   hideDone: false,
   blockedOnly: false,
   draggingId: null,
@@ -1018,17 +1019,7 @@ async function submitTemplate(e) {
 async function submitRapid(e) {
   e.preventDefault();
   const input = $("#rapid-input");
-  const raw = input.value.trim();
-
-  // #tag alone = filter the rapid log; nothing created
-  if (raw.startsWith("#")) {
-    state.rapidTagFilter = raw.slice(1);
-    input.value = "";
-    renderRapid();
-    return;
-  }
-
-  const parsed = parseRapidInput(raw);
+  const parsed = parseRapidInput(input.value);
   if (!parsed) return;
   await api.createNote(parsed);
   input.value = "";
@@ -1276,6 +1267,7 @@ function saveBoardPrefs() {
 async function renderBoard() {
   const params = {};
   if (state.boardCollection) params.collection = state.boardCollection;
+  if (state.boardTagFilter) params.tag = state.boardTagFilter;
 
   let data;
   try {
@@ -4092,6 +4084,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     saveBoardPrefs();
     renderBoard();
   });
+  $("#board-tag-filter").addEventListener("input", debounce((e) => {
+    state.boardTagFilter = e.target.value.trim() || null;
+    renderBoard();
+  }, 200));
   $("#board-hide-done").addEventListener("click", () => {
     state.hideDone = !state.hideDone;
     saveBoardPrefs();
