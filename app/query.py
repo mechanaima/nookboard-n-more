@@ -121,10 +121,17 @@ def parse(text: str) -> Query:
         match = re.match(r"(?i)in\s+(\S.*)$", rest)
         if not match:
             raise QueryError(
-                f"don't know how to read `{source}` — try `open tasks` or "
+                "don't know how to read `{source}` — try `open tasks` or "
                 "`open tasks in work`"
             )
-        return Query(verb="open", collection=match.group(1).strip(), source=source)
+        scope = match.group(1).strip()
+        # `#tag` routes to the tag path; bare word routes to collection.
+        if scope.startswith("#"):
+            tag = scope[1:].strip()
+            if not tag:
+                raise QueryError("`#` on its own does not name a tag")
+            return Query(verb="open", tag=tag, source=source)
+        return Query(verb="open", collection=scope, source=source)
 
     # `show` lists notes rather than work, and says which ones: a tag or a
     # collection. It has no default, deliberately -- `show notes` on its own is
