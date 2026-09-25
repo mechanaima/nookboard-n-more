@@ -1953,10 +1953,13 @@ hr.starry {
 .board-new { min-height: 34px; padding: 6px 14px; font-size: 12.5px; }
 
 /* Loading skeleton for the board view — a view that is still fetching must not
-   sit there as a grid of (empty) columns. */
-.board-view.is-loading .board-columns { opacity: 0; }
-.board-view.is-loading .board-columns .board-col__cards { display: none; }
-.board-view.is-loading .board-columns .board-col__empty { display: none; }
+   sit there as a grid of (empty) columns.
+
+   The columns are hidden one by one, never by fading their container: the
+   skeleton below is that container's own ::after, so `opacity: 0` on the
+   container faded the placeholder along with the columns and the loading state
+   was an empty screen. */
+.board-view.is-loading .board-columns > * { opacity: 0; }
 .board-view.is-loading .board-columns::after {
   content: ""; display: block;
   height: 180px; margin: 8px 0 0 0;
@@ -1970,6 +1973,13 @@ hr.starry {
 .board-hint {
   margin: 0 0 12px;
   font-size: 11.5px;
+  color: var(--fg-faint);
+}
+/* What the grid holds when the board could not be read: the line stands where
+   the columns would be, so it is styled for the grid, not for a column. */
+.board-empty {
+  margin: 0;
+  font-size: 12.5px;
   color: var(--fg-faint);
 }
 .board-hint b { color: var(--fg-dim); font-family: var(--font-mono); }

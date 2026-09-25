@@ -9,7 +9,13 @@ Run (stdio transport, what most MCP clients expect):
 
 
 Environment:
-    NOOKBOARD_MCP_BASE   base URL of the nookboard API (default http://127.0.0.1:8765)
+    NOOKBOARD_MCP_BASE   base URL of the nookboard API (default http://127.0.0.1:8765).
+                         An API this process *starts* is only ever bound to a
+                         loopback address (it has no authentication); a base
+                         pointing anywhere else is used as it stands when
+                         something is already serving there.
+    NOOKBOARD_VAULT      inherited as set, and otherwise left to the API's own
+                         <repo>/vault default.
 
 Tool surface (notes CRUD — the core):
     nook_list_notes   query, read-only: list notes, optionally filtered
@@ -24,6 +30,7 @@ constrained inputs (enums), smart defaults, response shaping, recovery guides.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import subprocess
@@ -31,7 +38,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Literal, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 from pydantic import BaseModel, Field
@@ -46,9 +53,37 @@ STAGE = Literal["backlog", "todo", "doing", "review", "done"]
 DEFAULT_BASE = "http://127.0.0.1:8765"
 STARTUP_TIMEOUT = 15.0
 
+#: The only hosts the API this process *starts* may bind to. The API has no
+#: authentication — it is the whole vault, served — so an address other machines
+#: can reach publishes every note, and lets them write and delete. A non-loopback
+#: base is still fine when something is already answering there (the readiness
+#: check comes first, and then nothing is started); it is starting one that is
+#: refused.
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _is_loopback(host: str) -> bool:
+    """True for an address, or a name, that only this machine can reach."""
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() in LOOPBACK_HOSTS
+
 
 def _base_url() -> str:
     return os.environ.get("NOOKBOARD_MCP_BASE", DEFAULT_BASE).rstrip("/")
+
+
+def _note_path(note_id: str) -> str:
+    """The API path for one note id, as a single encoded segment.
+
+    Note ids are vault filename stems, so `#` and `?` are perfectly legal in
+    them — and httpx reads either as the end of the path. Unencoded, the request
+    then lands on a *different* note: get returns a note whose name is a prefix
+    of the one asked for, and update or delete changes that note while reporting
+    the id you named. Quoting it as a segment is what keeps the id the id.
+    """
+    return f"/api/notes/{quote(note_id, safe='')}"
 
 
 def _api_is_ready(base: str) -> bool:
@@ -69,9 +104,20 @@ def _start_api(base: str) -> subprocess.Popen | None:
         raise RuntimeError(f"Cannot start Nookboard API for invalid base URL {base!r}.")
     if parsed.scheme == "https":
         raise RuntimeError("Cannot start an HTTPS Nookboard API; use an HTTP local endpoint.")
+    if not _is_loopback(parsed.hostname):
+        raise RuntimeError(
+            f"Refusing to start the Nookboard API on {parsed.hostname!r}: the API has no "
+            "authentication, so it may only be started on the loopback address. Point "
+            "NOOKBOARD_MCP_BASE at 127.0.0.1, or run a server yourself for any other "
+            "address, behind whatever boundary that address needs."
+        )
 
     env = os.environ.copy()
-    env.setdefault("NOOKBOARD_VAULT", str(Path.cwd() / "vault"))
+    # NOOKBOARD_VAULT is deliberately left as the caller set it. The API defaults
+    # it to `<repo>/vault` from its own file location — which is right even when
+    # the MCP client was started somewhere else entirely — and this process used
+    # to override that with `<its cwd>/vault`, quietly pointing a client launched
+    # outside the repo at a different vault (and at an empty one at that).
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     command = [
         sys.executable,
@@ -304,7 +350,7 @@ async def nook_list_notes(
 )
 async def nook_get_note(note_id: str) -> str:
     """Fetch a single note by id."""
-    return _jsonify(await _request("GET", f"/api/notes/{note_id}"))
+    return _jsonify(await _request("GET", _note_path(note_id)))
 
 
 @server.tool(
@@ -333,6 +379,8 @@ async def nook_list_collections() -> str:
 )
 async def nook_create_note(data: NoteCreate) -> str:
     """Create a note. `data` carries id, title and any optional fields."""
+    # A null on create is "not set", never "clear" — there is nothing to clear
+    # yet — so the nulls go, and the API sees only the fields that were chosen.
     payload = data.model_dump(exclude_unset=True, exclude_none=True)
     return _jsonify(await _request("POST", "/api/notes", json_body=payload))
 
@@ -349,8 +397,12 @@ async def nook_create_note(data: NoteCreate) -> str:
 )
 async def nook_update_note(note_id: str, data: NoteFields) -> str:
     """Partially update a note. Only fields present in `data` are changed."""
-    payload = data.model_dump(exclude_unset=True, exclude_none=True)
-    return _jsonify(await _request("PATCH", f"/api/notes/{note_id}", json_body=payload))
+    # `exclude_unset`, NOT `exclude_none`: the difference is the whole "to clear a
+    # field, pass an explicit null" in the description above. Dropping the nulls
+    # sent an empty body, the API correctly read that as "change nothing", and
+    # the tool reported success on a note that still had its old value.
+    payload = data.model_dump(exclude_unset=True)
+    return _jsonify(await _request("PATCH", _note_path(note_id), json_body=payload))
 
 
 @server.tool(
@@ -364,7 +416,7 @@ async def nook_update_note(note_id: str, data: NoteFields) -> str:
 )
 async def nook_delete_note(note_id: str) -> str:
     """Delete a note. Irreversible — use only on explicit instruction."""
-    await _request("DELETE", f"/api/notes/{note_id}")
+    await _request("DELETE", _note_path(note_id))
     return _jsonify({"deleted": note_id})
 
 

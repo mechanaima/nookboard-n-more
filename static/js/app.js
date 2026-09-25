@@ -1304,8 +1304,18 @@ async function renderBoard() {
     for (const col of columns) wrap.appendChild(buildColumn(col));
   } catch (err) {
     // The old code returned here, so a failed board load drew a blank grid and
-    // never said why. Fall through to the error line below instead.
+    // never said why. Fall through to the error line below instead -- and empty
+    // the grid on the way: a failed *refresh* used to leave the cards from the
+    // last good load standing under the failure note, and after a filter change
+    // those read as the results of the request that just failed.
     state.boardError = err.message;
+    if (wrap) {
+      wrap.replaceChildren();
+      const note = document.createElement("p");
+      note.className = "board-empty";
+      note.textContent = "The board could not be read, so nothing is shown here.";
+      wrap.append(note);
+    }
   }
 
   // Clear the loading state on BOTH the view and the column grid. `showView`
@@ -3864,6 +3874,11 @@ async function renderHome() {
   }
   if (dash) dash.classList.remove("is-busy");
   if (body) body.classList.remove("is-busy");
+  // A load that lands clears what the offline one left behind. Otherwise a
+  // retry painted current tiles beside the old "not reachable" note, and the
+  // note has no way to know it has gone stale: it is only ever written here.
+  if (dash) dash.textContent = "";
+  if (body) body.replaceChildren();
   paintHome();
 }
 
@@ -4606,4 +4621,4 @@ window.addEventListener("DOMContentLoaded", async () => {
 
 // Exported so a `node --test` harness can install a fake document, point the
 // API at a stub and exercise the render helpers without a browser.
-export { state, api, renderHome, renderWorkspaces };
+export { state, api, renderBoard, renderHome, renderWorkspaces };

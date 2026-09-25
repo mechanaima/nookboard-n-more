@@ -606,9 +606,24 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
     @app.patch("/api/notes/{note_id}")
     def update_note(note_id: str, payload: dict):
         existing = _require_note(note_id)
+
+        def _list_field(key: str, current: list) -> list:
+            """A list-valued field: absent keeps it, an explicit null clears it.
+
+            For a scalar, clearing means null; for a list it means the empty
+            list, because that is what the model holds and what the writer
+            iterates. Taking the null literally turned "remove the tags" — which
+            is what any client sends to clear a list — into a 500.
+            """
+            if key not in payload:
+                return current
+            return payload[key] or []
+
         new_dates = existing.dates
         if "dates" in payload:
-            new_dates = [date.fromisoformat(d) for d in payload["dates"]]
+            # The one list field whose items are converted rather than kept, so
+            # it reads its own null rather than going through the helper above.
+            new_dates = [date.fromisoformat(d) for d in payload["dates"] or []]
 
         # Dependencies are validated here rather than at the board level so any
         # caller — editor, import, script — gets the same cycle protection.
@@ -616,7 +631,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         if "blocked_by" in payload:
             _, by_id = _index()
             proposed = normalize_blocked_by(
-                payload["blocked_by"], note_id=note_id, by_id=by_id
+                _list_field("blocked_by", existing.blocked_by), note_id=note_id, by_id=by_id
             )
             cycle = check_blockers(note_id, proposed, by_id)
             if cycle:
@@ -648,7 +663,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             # it was the index write that used to quietly keep the old one.
             mood=payload.get("mood", existing.mood),
             pain=coerce_pain(payload.get("pain", existing.pain)),
-            tags=payload.get("tags", existing.tags),
+            tags=_list_field("tags", existing.tags),
             recurrence=payload.get("recurrence", existing.recurrence),
             stage=stage,
             blocked_by=blocked_by,

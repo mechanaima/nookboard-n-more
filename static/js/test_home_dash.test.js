@@ -131,6 +131,25 @@ test("renderHome clears the busy flag once the fetch lands", async () => {
     "dashboard body should be cleared once the fetch lands");
 });
 
+test("a load that lands clears the offline note the failed one left", async () => {
+  installGlobals();
+  const mod = await import("./app.js");
+  mod.state.activeView = "home";
+  mod.state.homeMonth = undefined;
+  mod.api.home = async () => { throw new Error("connect ECONNREFUSED"); };
+  await mod.renderHome();
+  assert.match(els["home-dash-status"].textContent, /not reachable/i,
+    "the failed load should have painted the warning");
+
+  mod.api.home = async () => HOME;
+  await mod.renderHome();
+
+  assert.equal(els["home-dash-status"].textContent, "",
+    "a load that lands should clear the stale warning, not leave it over fresh tiles");
+  assert.equal(els["home-dash-body"].children.length, 0,
+    "and the offline note should be gone with it");
+});
+
 test("renderHome clears the busy flag and says so when the server is unreachable", async () => {
   installGlobals();
   const mod = await import("./app.js");
