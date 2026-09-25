@@ -99,7 +99,7 @@ def test_summary_counts_ready_and_blocked(tmp_path):
     task(c, "dependent", blocked_by=["blocker"])
     task(c, "free")
     summary = c.get("/api/board").json()["summary"]
-    assert summary == {"total": 3, "open": 3, "done": 0, "blocked": 1, "ready": 2}
+    assert summary == {"total": 3, "open": 3, "done": 0, "blocked": 1, "ready": 2, "due_soon": 0}
 
 
 def test_completing_a_blocker_unblocks_the_dependent(tmp_path):
