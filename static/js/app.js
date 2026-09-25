@@ -4084,10 +4084,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     saveBoardPrefs();
     renderBoard();
   });
-  $("#board-tag-filter").addEventListener("input", debounce((e) => {
+  $("#board-tag-filter").addEventListener("input", (e) => {
     state.boardTagFilter = e.target.value.trim() || null;
     renderBoard();
-  }, 200));
+  });
   $("#board-hide-done").addEventListener("click", () => {
     state.hideDone = !state.hideDone;
     saveBoardPrefs();
