@@ -15,6 +15,7 @@ the index and the tests all exercise the same rules.
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Iterable, Mapping, Optional, Sequence
 
 from .models import Note, Stage, Status, stage_for_status
@@ -195,11 +196,13 @@ def next_position(notes: Iterable[Note], stage: str) -> float:
 def order_key(note: Note) -> tuple:
     """Canonical in-column sort key.
 
-    Explicit positions win and are compared as floats; notes that were never
-    placed fall to the bottom in creation order. The `is None` flag leads the
-    tuple so Python never has to compare None with a float.
+    Pinned notes float to the top. Explicit positions win and are compared as
+    floats; notes that were never placed fall to the bottom in creation order.
+    The `is None` flag leads the tuple so Python never has to compare None with
+    a float.
     """
     return (
+        not note.pinned,  # pinned first (False < True)
         note.position is None,
         note.position if note.position is not None else 0.0,
         note.created.toordinal(),
@@ -239,14 +242,28 @@ def plan_move(
     return out
 
 
+def _is_due_soon(date_val, today):
+    """True when date_val falls in the window [today, today+2 days]."""
+    if not date_val:
+        return False
+    diff = (date_val - today).days
+    return 0 <= diff <= 2
+
+
 def board_summary(notes: Sequence[Note], by_id: Mapping[str, Note]) -> dict:
     """Counts for the board header — the numbers that make progress legible."""
     open_notes = [n for n in notes if not is_closed(n)]
     blocked = [n for n in open_notes if is_blocked(n, by_id)]
+    today = date.today()
+    due_soon = sum(
+        1 for n in notes
+        if n.dates and _is_due_soon(n.dates[0], today)
+    )
     return {
         "total": len(notes),
         "open": len(open_notes),
         "done": len(notes) - len(open_notes),
         "blocked": len(blocked),
         "ready": len(open_notes) - len(blocked),
+        "due_soon": due_soon,
     }

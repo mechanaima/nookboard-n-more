@@ -37,6 +37,7 @@
       <button data-view="rapid"       class="tab"        role="tab">Rapid Log</button>
       <button data-view="board"       class="tab"        role="tab">Board</button>
       <button data-view="mood"        class="tab"        role="tab">Mood</button>
+      <button data-view="time"        class="tab"        role="tab">⏱</button>
       <button data-view="transcribe"  class="tab"        role="tab">Transcribe</button>
       <button data-view="workspaces"  class="tab"        role="tab">Workspaces</button>
       <button data-view="bookmarks"   class="tab"        role="tab">Bookmarks</button>
@@ -80,6 +81,9 @@
           <span class="legend-item sig-event"><i class="glyph">○</i> event</span>
           <span class="legend-item sig-note"><i class="glyph">–</i> note</span>
         </p>
+        <div class="rapid-tag-filter-row">
+          <input id="rapid-tag-filter" class="rapid-tag-filter" type="text" placeholder="filter by tag" aria-label="filter rapid log by tag" />
+        </div>
         <form id="rapid-form" class="inline-form">
           <input id="rapid-input" placeholder="Type • buy milk and press Enter"
                  aria-label="rapid log entry">
@@ -150,6 +154,11 @@
           </label>
           <button id="home-new-note" class="home-cta" type="button">＋ New note</button>
         </div>
+
+        <form id="home-quick-add" class="home-quick-add" autocomplete="off" novalidate>
+          <input id="hq-input" type="text" placeholder="+ task — press Enter" autocomplete="off"
+                 spellcheck="false" aria-label="Quick add task">
+        </form>
 
         <div class="home-actions" role="toolbar" aria-label="quick actions">
           <button class="h-action h-action--entry" type="button" data-entry="task"
@@ -237,6 +246,14 @@
             <p id="home-workspaces-line" class="h-sub">—</p>
             <ul id="home-workspaces-list" class="h-list"></ul>
             <button id="home-workspaces-action" class="h-button" type="button">Workspaces</button>
+          </section>
+
+          <section class="h-card h-card--obsidian">
+            <div class="h-head"><h2>School Notes</h2></div>
+            <p id="home-obsidian-line" class="h-sub">—</p>
+            <div id="obsidian-filters" role="group" aria-label="Filter notes by folder"></div>
+            <ul id="home-obsidian-list" class="h-list"></ul>
+            <button id="home-obsidian-action" class="h-button" type="button">Open in Obsidian</button>
           </section>
         </div>
 
@@ -394,6 +411,36 @@
       <div id="board-columns" class="board-columns"></div>
     </section>
 
+    <section id="time-view" class="time-view hidden">
+      <div class="time-inner">
+        <h2 class="time-title">Pomodoro</h2>
+
+        <div id="time-ring-wrap" class="time-ring-wrap">
+          <div id="time-ring" class="time-ring" style="--pct: 0%">
+            <span id="time-display" class="time-display">25:00</span>
+            <span id="time-mode" class="time-mode">Focus</span>
+          </div>
+        </div>
+
+        <div class="time-controls">
+          <button id="time-start" class="time-btn time-btn--primary" type="button">Start</button>
+          <button id="time-reset" class="time-btn" type="button">Reset</button>
+        </div>
+
+        <div id="time-task-picker" class="time-task-picker">
+          <label for="time-task-select">Link to task</label>
+          <select id="time-task-select" class="time-task-select">
+            <option value="">— none —</option>
+          </select>
+          <span id="time-task-name" class="time-task-name"></span>
+        </div>
+
+        <div id="time-session-info" class="time-session-info">
+          <span id="time-session-label">0 of 4 sessions</span>
+        </div>
+      </div>
+    </section>
+
     <section id="mood-view" class="mood-view hidden">
       <div class="mood-bar">
         <div class="mood-bar-left">
@@ -462,11 +509,14 @@
 
     <section class="editor">
       <div id="empty-state" class="empty-state">
-        <div class="empty-mark" aria-hidden="true"></div>
-        <p class="empty-title">Nothing open</p>
-        <p class="empty-sub">Pick a note from the log, or start a fresh one.</p>
+        <div class="empty-under-construction" aria-hidden="true">
+          <div class="empty-bar-wrap"><div class="empty-bar"></div></div>
+          <div class="empty-worker">🚧</div>
+        </div>
+        <p class="empty-title">Under Construction</p>
+        <p class="empty-sub">This area is being built — check back soon!</p>
         <button id="new-note-btn" class="btn btn--primary">+ New note</button>
-        <p class="empty-hint">log entries with <kbd>•</kbd> task, <kbd>○</kbd> event, <kbd>–</kbd> note</p>
+        <p class="empty-hint">log entries with <kbd>•</kbd> task <kbd>○</kbd> event <kbd>–</kbd> note</p>
       </div>
 
       <article id="note-editor" class="sheet hidden">
@@ -751,6 +801,28 @@
           <p id="preview-modal-links-empty" class="preview-empty hidden"></p>
         </section>
       </div>
+    </div>
+  </div>
+
+  <!-- Keyboard shortcuts overlay -->
+  <div id="shortcuts-overlay" class="shortcuts-overlay hidden" aria-hidden="true">
+    <div class="shortcuts-backdrop" id="shortcuts-backdrop"></div>
+    <div class="shortcuts-card" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+      <header class="shortcuts-head">
+        <h2 class="shortcuts-title">Keyboard Shortcuts</h2>
+        <button id="shortcuts-close" class="btn btn--ghost btn--small" type="button">✕</button>
+      </header>
+      <table class="shortcuts-table">
+        <tbody>
+          <tr><td><kbd>/</kbd></td><td>Focus search</td></tr>
+          <tr><td><kbd>s</kbd></td><td>Focus search</td></tr>
+          <tr><td><kbd>n</kbd></td><td>New note</td></tr>
+          <tr><td><kbd>?</kbd></td><td>Toggle this overlay</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>Close editor / modal</td></tr>
+          <tr><td><kbd>1</kbd>–<kbd>5</kbd></td><td>Collapse board columns</td></tr>
+          <tr><td><kbd>t</kbd></td><td>Open timer</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 

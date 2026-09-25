@@ -371,6 +371,8 @@ class Note:
     # Task ids this note waits on. Stored in ONE direction only: the reverse
     # ("what does this block?") is derived, so the two views cannot drift.
     blocked_by: list[str] = field(default_factory=list)
+    # Pinned notes float to the top of their board column.
+    pinned: bool = False
     # Explicit order within its column. None sorts last, by creation date.
     position: Optional[float] = None
     #: The day this note was finished. Stamped when a note *becomes* complete,

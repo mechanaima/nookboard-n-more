@@ -175,8 +175,12 @@ def test_the_summary_carries_every_card():
     assert out["today"] == "2026-09-24"
     assert set(out) == {
         "vault", "today", "calendar", "statistics", "board", "today_card", "mood",
-        "workspaces",
+        "workspaces", "obsidian_notes", "streak",
     }
+    assert "obsidian_notes" in out
+    assert isinstance(out["obsidian_notes"], list)
+    # No obsidian vault was passed, so empty list
+    assert len(out["obsidian_notes"]) == 0
     # No states were handed over, so the card says there is nothing to show --
     # rather than inventing a count for folders nobody read.
     assert out["workspaces"]["total"] == 0
@@ -220,3 +224,77 @@ def test_the_cards_agree_with_the_views_they_stand_for():
     # and the mood card is the mood layer's own summary, not a second opinion
     series = moodlib.daily_series(notes, start=THURSDAY.replace(day=1), end=THURSDAY)
     assert out["mood"]["streak"] == moodlib.summarize(series, today=THURSDAY)["streak"]
+
+
+# --- activity streak --------------------------------------------------------
+
+def _note_with_date(nid, title, created, collection="journal", dates=()):
+    return Note(
+        id=nid, collection=collection, title=title, body="",
+        signifier=Signifier.NOTE, status=Status.OPEN,
+        created=created, dates=list(dates),
+    )
+
+
+def _task_with_date(nid, title, created, collection="journal", completed=None):
+    return Note(
+        id=nid, collection=collection, title=title, body="",
+        signifier=Signifier.TASK, status=Status.OPEN, created=created,
+        completed=completed, dates=[],
+    )
+
+
+def test_streak_zero_when_nothing():
+    assert home.activity_streak([], THURSDAY) == 0
+
+
+def test_streak_broken_by_gap():
+    from datetime import timedelta
+    today = THURSDAY
+    notes = [
+        _task_with_date("a", "Done yesterday", today, completed=today - timedelta(days=1)),
+        _task_with_date("b", "Done 3 days ago", today, completed=today - timedelta(days=3)),
+    ]
+    assert home.activity_streak(notes, today) == 1
+
+
+def test_streak_counts_consecutive_completed():
+    from datetime import timedelta
+    today = THURSDAY
+    notes = [
+        _task_with_date("a", "Done today", today, completed=today),
+        _task_with_date("b", "Done yesterday", today, completed=today - timedelta(days=1)),
+        _task_with_date("c", "Done 2 days ago", today, completed=today - timedelta(days=2)),
+    ]
+    assert home.activity_streak(notes, today) == 3
+
+
+def test_streak_mood_entries_count():
+    from datetime import timedelta
+    today = THURSDAY
+    notes = [
+        _note_with_date("m1", "Mood today", today, collection="mood", dates=[today]),
+        _task_with_date("t1", "Done yesterday", today, completed=today - timedelta(days=1)),
+    ]
+    assert home.activity_streak(notes, today) == 2
+
+
+def test_streak_forgives_unstarted_today():
+    from datetime import timedelta
+    today = THURSDAY
+    # today has nothing, but yesterday does — streak should still be 1
+    notes = [
+        _task_with_date("a", "Done yesterday", today, completed=today - timedelta(days=1)),
+    ]
+    assert home.activity_streak(notes, today) == 1
+
+
+def test_streak_in_summary():
+    from datetime import timedelta
+    today = THURSDAY
+    notes = [
+        _task_with_date("a", "Done today", today, completed=today),
+        _task_with_date("b", "Done yesterday", today, completed=today - timedelta(days=1)),
+    ]
+    out = home.summary(notes, root="/tmp/v", today=today, calendar_counts={})
+    assert out["streak"] == 2

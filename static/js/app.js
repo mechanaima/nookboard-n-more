@@ -246,6 +246,13 @@ const api = {
       body: JSON.stringify({ id, stage, before_id: beforeId }),
     }));
   },
+  async pinCard(id) {
+    return jsonOrThrow(await send("/api/board/pin", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ id }),
+    }));
+  },
   async deps(id)         { return jsonOrThrow(await send(`/api/notes/${encodeURIComponent(id)}/deps`)); },
   async addDep(id, blockerId) {
     return jsonOrThrow(await send(`/api/notes/${encodeURIComponent(id)}/deps`, {
@@ -323,7 +330,7 @@ const SIDEBAR_VIEWS = ["rapid", "collections", "timeline", "calendar"];
 //: Views that need the full width and therefore trade away the sidebar: the
 //: board (five columns) and mood (a year of weeks). They keep the editor as a
 //: second column so a note can be read or fixed without leaving the view.
-const WIDE_VIEWS = ["home", "board", "mood", "transcribe", "workspaces", "bookmarks", "history"];
+const WIDE_VIEWS = ["home", "board", "mood", "time", "transcribe", "workspaces", "bookmarks", "history"];
 
 function showView(name) {
   state.activeView = name;
@@ -340,6 +347,7 @@ function showView(name) {
   if (name === "home") renderHome();
   if (name === "board") renderBoard();
   if (name === "mood") renderMood();
+  if (name === "time") renderTime();
   if (name === "transcribe") renderTranscribe();
   if (name === "workspaces") renderWorkspaces();
   if (name === "bookmarks") renderBookmarks();
@@ -1301,6 +1309,16 @@ function renderTimeHint() {
   hint.classList.toggle("field-hint--warn", Boolean($("#note-at").value) && !days);
 }
 
+// Persist board column collapse state in sessionStorage.
+const COLLAPSED_KEY = "nb-cols-collapsed";
+function _boardColCollapsed() {
+  try { return JSON.parse(sessionStorage.getItem(COLLAPSED_KEY) || "{}"); }
+  catch { return {}; }
+}
+function _boardColCollapsedSave(map) {
+  try { sessionStorage.setItem(COLLAPSED_KEY, JSON.stringify(map)); } catch {}
+}
+
 function buildColumn(col) {
   const section = document.createElement("section");
   section.className = "board-col";
@@ -1317,7 +1335,33 @@ function buildColumn(col) {
   count.className = "board-col__count";
   count.textContent = String(col.count);
   count.title = `${col.count} card${col.count === 1 ? "" : "s"}`;
-  head.append(dot, name, count);
+
+  // Collapse toggle
+  const toggle = document.createElement("button");
+  toggle.className = "board-col__toggle";
+  toggle.setAttribute("aria-label", `Collapse ${col.label} column`);
+  toggle.setAttribute("data-stage", col.id);
+  toggle.textContent = "▶";
+  const collapsed = _boardColCollapsed();
+  if (collapsed[col.id]) {
+    toggle.textContent = "▶";
+    section.classList.add("is-collapsed");
+  } else {
+    toggle.textContent = "▼";
+  }
+  toggle.addEventListener("click", () => {
+    const col = toggle.closest(".board-col");
+    const id = toggle.dataset.stage;
+    const now = _boardColCollapsed();
+    const next = !now[id];
+    now[id] = next;
+    _boardColCollapsedSave(now);
+    col.classList.toggle("is-collapsed", next);
+    toggle.setAttribute("aria-label", `${next ? "Expand" : "Collapse"} ${id} column`);
+    toggle.textContent = next ? "▶" : "▼";
+  });
+
+  head.append(dot, name, count, toggle);
   section.appendChild(head);
 
   const list = document.createElement("ul");
@@ -1522,6 +1566,16 @@ function showBoardError(message) {
   el.textContent = message;
   el.classList.add("board-summary--error");
   setTimeout(() => el.classList.remove("board-summary--error"), 4000);
+}
+
+async function togglePin(id) {
+  try {
+    await api.pinCard(id);
+  } catch (err) {
+    showBoardError(err.message);
+    return;
+  }
+  await refresh();
 }
 
 /* ------------------------------------------------------------ dependencies -- */
@@ -2575,6 +2629,7 @@ function paintTiles(host, tiles) {
     const value = document.createElement("span");
     value.className = "h-tile-value";
     value.textContent = String(tile.value);
+    if (tile.color) value.style.color = `var(--${tile.color})`;
     const label = document.createElement("span");
     label.className = "h-tile-label";
     label.textContent = tile.label;
@@ -2625,7 +2680,9 @@ function paintHome() {
   paintTiles($("#home-stats"), statTiles(payload.statistics));
   paintTiles($("#home-board"), statTiles(payload.board, BOARD_TILES));
 
-  $("#home-streak").textContent = String(payload.mood.streak);
+  $("#home-streak").textContent = String(
+    payload.streak !== undefined ? payload.streak : (payload.mood?.streak ?? 0)
+  );
   const moodBits = [];
   if (payload.mood.level) moodBits.push(payload.mood.level);
   if (payload.mood.pain !== null && payload.mood.pain !== undefined) {
@@ -2666,6 +2723,122 @@ function paintHome() {
     li.textContent = "• no notes point at a folder yet";
     folderList.append(li);
   }
+
+  // Secondary Obsidian vault (e.g. ~/Documents/School) — preview-style note cards
+  // Client-side folder filter: chips above the grid, no API call needed.
+  const obsidian = payload.obsidian_notes || [];
+  const obsidianList = $("#home-obsidian-list");
+  const filtersEl = $("#obsidian-filters");
+
+  if (obsidian.length === 0) {
+    obsidianList.textContent = "";
+    filtersEl.textContent = "";
+    const li = document.createElement("li");
+    li.textContent = "• no vault configured";
+    obsidianList.appendChild(li);
+    $("#home-obsidian-line").textContent = "set NOOKBOARD_OBSIDIAN_VAULT to see notes here";
+    $("#home-obsidian-action").disabled = true;
+  } else {
+    // Extract unique top-level folders from note ids
+    const folders = [...new Set(
+      obsidian.map((n) => n.id.includes("/") ? n.id.split("/")[0] : "")
+    )].filter(Boolean).sort();
+
+    // Persistent filter state in the closure of paintHome
+    if (paintHome._obsidianFilter === undefined) {
+      paintHome._obsidianFilter = "";
+    }
+    const active = paintHome._obsidianFilter;
+
+    // Render chips
+    filtersEl.textContent = "";
+    const allChip = document.createElement("button");
+    allChip.className = "obsidian-filter-chip";
+    allChip.type = "button";
+    allChip.textContent = "All";
+    allChip["aria-pressed"] = String(active === "");
+    allChip.addEventListener("click", () => {
+      paintHome._obsidianFilter = "";
+      paintHome();
+    });
+    filtersEl.appendChild(allChip);
+    for (const folder of folders) {
+      const chip = document.createElement("button");
+      chip.className = "obsidian-filter-chip";
+      chip.type = "button";
+      chip.textContent = folder;
+      chip["aria-pressed"] = String(active === folder);
+      chip.addEventListener("click", () => {
+        paintHome._obsidianFilter = folder;
+        paintHome();
+      });
+      filtersEl.appendChild(chip);
+    }
+
+    // Filter notes
+    const visible = active
+      ? obsidian.filter((n) => n.id.startsWith(active + "/"))
+      : obsidian;
+
+    $("#home-obsidian-line").textContent =
+      folders.length > 1
+        ? `${visible.length} of ${obsidian.length} notes`
+        : `${obsidian.length} recent notes`;
+    $("#home-obsidian-action").disabled = false;
+
+    obsidianList.textContent = "";
+    for (const note of visible.slice(0, 8)) {
+      const card = document.createElement("a");
+      card.className = "obsidian-note-card";
+      card.href = note.obsidian_url;
+      card.target = "_blank";
+      card.rel = "noopener";
+      card.title = `Open "${note.title}" in Obsidian`;
+
+      // Path / collection (faint subtitle)
+      const path = note.id.includes("/")
+        ? note.id.replace(/\/[^/]+$/, "")  // parent folder only
+        : "";
+      if (path) {
+        const pathEl = document.createElement("span");
+        pathEl.className = "obsidian-note-card__path";
+        pathEl.textContent = path;
+        card.appendChild(pathEl);
+      }
+
+      // Title
+      const title = document.createElement("span");
+      title.className = "obsidian-note-card__title";
+      title.textContent = note.title;
+      card.appendChild(title);
+
+      // Excerpt (plain text, up to ~120 chars)
+      if (note.excerpt) {
+        const ex = document.createElement("span");
+        ex.className = "obsidian-note-card__excerpt";
+        ex.textContent = note.excerpt.length > 120
+          ? note.excerpt.slice(0, 120).trimEnd() + "…"
+          : note.excerpt;
+        card.appendChild(ex);
+      }
+
+      // Date chip
+      if (note.mtime) {
+        const date = document.createElement("span");
+        date.className = "obsidian-note-card__date";
+        date.textContent = friendlyDate(_mtimeToDate(note.mtime), todayIso());
+        card.appendChild(date);
+      }
+
+      obsidianList.appendChild(card);
+    }
+  }
+}
+
+function _mtimeToDate(mtime) {
+  // Convert Unix timestamp (seconds) to YYYY-MM-DD in local time
+  const d = new Date(mtime * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 // -- transcription -----------------------------------------------------------
@@ -3584,6 +3757,277 @@ function shiftHomeMonth(delta) {
   return renderHome();
 }
 
+/* ------------------------------------------------------------------ timer -- */
+
+const WORK_SECONDS = 25 * 60;
+const BREAK_SECONDS = 5 * 60;
+const MAX_SESSIONS = 4;
+const SESSION_KEY = "nb-timer";
+
+const timer = {
+  mode: "work",    // 'work' | 'break'
+  seconds: WORK_SECONDS,
+  running: false,
+  started_at: null, // ms timestamp when last started
+  sessions: 0,      // completed work sessions
+  taskId: null,    // linked task id
+};
+
+// Persist to sessionStorage
+function _saveTimer() {
+  try {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({
+      mode: timer.mode,
+      seconds: timer.seconds,
+      running: timer.running,
+      started_at: timer.started_at,
+      sessions: timer.sessions,
+      taskId: timer.taskId,
+    }));
+  } catch {}
+}
+
+// Restore from sessionStorage
+function _loadTimer() {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    timer.mode = s.mode ?? "work";
+    timer.seconds = s.seconds ?? WORK_SECONDS;
+    timer.running = false; // never auto-resume on reload
+    timer.started_at = null;
+    timer.sessions = s.sessions ?? 0;
+    timer.taskId = s.taskId ?? null;
+  } catch {}
+}
+
+_loadTimer();
+
+function _beep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 440;
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.15);
+  } catch {}
+}
+
+function _format(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function renderTime() {
+  const display = $("#time-display");
+  const ring = $("#time-ring");
+  const mode = $("#time-mode");
+  const startBtn = $("#time-start");
+  const sessionLabel = $("#time-session-label");
+
+  if (!display) return;
+
+  populateTaskPicker();
+
+  // Compute elapsed from started_at if running
+  let remaining = timer.seconds;
+  if (timer.running && timer.started_at) {
+    const elapsed = Math.floor((Date.now() - timer.started_at) / 1000);
+    remaining = Math.max(0, timer.seconds - elapsed);
+  }
+
+  display.textContent = _format(remaining);
+  mode.textContent = timer.mode === "work" ? "Focus" : "Break";
+
+  const total = timer.mode === "work" ? WORK_SECONDS : BREAK_SECONDS;
+  const pct = timer.running && timer.started_at
+    ? Math.round((1 - remaining / total) * 100)
+    : (timer.running ? 0 : (timer.mode === "work" ? 0 : 0));
+  ring.style.setProperty("--pct", `${pct}%`);
+
+  startBtn.textContent = timer.running ? "Pause" : "Start";
+  sessionLabel.textContent = `${timer.sessions} of ${MAX_SESSIONS} sessions`;
+
+  // Color the ring by mode
+  ring.style.background =
+    timer.mode === "work"
+      ? `conic-gradient(var(--lavender) ${pct}%, var(--surface1) 0%)`
+      : `conic-gradient(var(--sky) ${pct}%, var(--surface1) 0%)`;
+
+  // Update task picker display
+  const taskName = $("#time-task-name");
+  const linked = timer.taskId && state.tasks?.find((t) => t.id === timer.taskId);
+  if (taskName) {
+    taskName.textContent = linked ? (linked.title || linked.id) : "";
+  }
+}
+
+async function populateTaskPicker() {
+  const sel = $("#time-task-select");
+  if (!sel) return;
+
+  let tasks = state.tasks;
+  if (!tasks || !tasks.length) {
+    try { tasks = await api.tasks({ include_done: false }); } catch { tasks = []; }
+  }
+
+  const open = (tasks || []).filter((t) => t.signifier === "task" && t.status !== "complete");
+  sel.innerHTML = '<option value="">— none —</option>';
+  for (const t of open) {
+    const opt = document.createElement("option");
+    opt.value = t.id;
+    opt.textContent = t.title || t.id;
+    sel.appendChild(opt);
+  }
+  if (timer.taskId) sel.value = timer.taskId;
+}
+
+let _timerRaf = null;
+
+function _tick() {
+  if (!timer.running || !timer.started_at) return;
+
+  const elapsed = Math.floor((Date.now() - timer.started_at) / 1000);
+  const remaining = Math.max(0, timer.seconds - elapsed);
+
+  if (remaining === 0) {
+    if (timer.mode === "work") {
+      timer.sessions += 1;
+      _beep();
+      if (timer.sessions >= MAX_SESSIONS) {
+        if (confirm(`${MAX_SESSIONS} sessions done! Log them?`)) {
+          logTimerSessions();
+        }
+        timer.sessions = 0;
+      }
+      timer.mode = "break";
+      timer.seconds = BREAK_SECONDS;
+    } else {
+      timer.mode = "work";
+      timer.seconds = WORK_SECONDS;
+    }
+    timer.running = false;
+    timer.started_at = null;
+    _saveTimer();
+    renderTime();
+    return;
+  }
+
+  // Update only the display elements — no full render
+  const display = $("#time-display");
+  const ring = $("#time-ring");
+  if (display) display.textContent = _format(remaining);
+  if (ring) {
+    const total = timer.mode === "work" ? WORK_SECONDS : BREAK_SECONDS;
+    const pct = Math.round((1 - remaining / total) * 100);
+    ring.style.background =
+      timer.mode === "work"
+        ? `conic-gradient(var(--lavender) ${pct}%, var(--surface1) 0%)`
+        : `conic-gradient(var(--sky) ${pct}%, var(--surface1) 0%)`;
+  }
+
+  _timerRaf = requestAnimationFrame(_tick);
+}
+
+function flushTimerProgress() {
+  // Log partial work time when pausing or resetting mid-session
+  if (!timer.running || !timer.started_at) return;
+  const elapsed = Math.floor((Date.now() - timer.started_at) / 1000);
+  if (elapsed < 60) return; // skip < 1 min fragments
+  const mins = Math.round(elapsed / 60);
+  const linkedTask = timer.taskId
+    ? state.tasks?.find((t) => t.id === timer.taskId)
+    : null;
+  const taskLine = linkedTask ? ` for "${linkedTask.title || linkedTask.id}"` : "";
+  api.createNote({
+    id: "pomodoro-" + Date.now().toString(36),
+    title: `${mins} min work session${taskLine}`,
+    body: `Logged at ${new Date().toLocaleString()}.`,
+    signifier: "task",
+    status: "complete",
+    collection: "inbox",
+  }).catch(() => {});
+}
+
+function startTimer() {
+  if (timer.running) {
+    // Pause — save current remaining seconds
+    const elapsed = Math.floor((Date.now() - timer.started_at) / 1000);
+    timer.seconds = Math.max(0, timer.seconds - elapsed);
+    timer.running = false;
+    timer.started_at = null;
+    cancelAnimationFrame(_timerRaf);
+    flushTimerProgress();
+    _saveTimer();
+    renderTime();
+  } else {
+    timer.running = true;
+    timer.started_at = Date.now();
+    _saveTimer();
+    renderTime();
+    _timerRaf = requestAnimationFrame(_tick);
+  }
+}
+
+function resetTimer() {
+  cancelAnimationFrame(_timerRaf);
+  flushTimerProgress();
+  timer.mode = "work";
+  timer.seconds = WORK_SECONDS;
+  timer.running = false;
+  timer.started_at = null;
+  timer.taskId = null;
+  _saveTimer();
+  renderTime();
+}
+
+async function logTimerSessions() {
+  const count = timer.sessions || MAX_SESSIONS;
+  const linkedTask = timer.taskId
+    ? state.tasks?.find((t) => t.id === timer.taskId)
+    : null;
+  const taskLine = linkedTask ? ` for "${linkedTask.title || linkedTask.id}"` : "";
+
+  try {
+    if (linkedTask) {
+      await api.updateNote(linkedTask.id, { status: "complete" });
+    }
+    await api.createNote({
+      id: "pomodoro-" + Date.now().toString(36),
+      title: `${count} Pomodoro sessions completed${taskLine}`,
+      body: `Logged at ${new Date().toLocaleString()}.`,
+      signifier: "task",
+      status: "complete",
+      collection: "inbox",
+    });
+    timer.taskId = null;
+    _saveTimer();
+  } catch {}
+}
+
+// -- timer
+$("#time-start")?.addEventListener("click", startTimer);
+$("#time-reset")?.addEventListener("click", resetTimer);
+$("#time-task-select")?.addEventListener("change", (e) => {
+  timer.taskId = e.target.value || null;
+  _saveTimer();
+  renderTime();
+});
+// Space starts/pauses the timer when the time view is open
+document.addEventListener("keydown", (e) => {
+  if (state.activeView === "time" && e.key === " " && !e.target.matches("input,textarea")) {
+    e.preventDefault();
+    startTimer();
+  }
+}, true);
+
 /* ------------------------------------------------------------------ boot -- */
 
 window.addEventListener("DOMContentLoaded", async () => {
@@ -3626,8 +4070,53 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   $("#board-new-task").addEventListener("click", createBlankNote);
 
+  // -- keyboard shortcuts overlay
+  const shortcutsOverlay = () => $("#shortcuts-overlay");
+  function openShortcuts() {
+    const el = shortcutsOverlay();
+    if (!el) return;
+    el.classList.remove("hidden");
+    el.setAttribute("aria-hidden", "false");
+    $("#shortcuts-close")?.focus();
+  }
+  function closeShortcuts() {
+    const el = shortcutsOverlay();
+    if (!el) return;
+    el.classList.add("hidden");
+    el.setAttribute("aria-hidden", "true");
+  }
+  $("#shortcuts-close")?.addEventListener("click", closeShortcuts);
+  $("#shortcuts-backdrop")?.addEventListener("click", closeShortcuts);
+  // Show once per session (first time only, then remember)
+  try {
+    if (!sessionStorage.getItem("nb-shortcuts-seen")) {
+      openShortcuts();
+      sessionStorage.setItem("nb-shortcuts-seen", "1");
+    }
+  } catch {}
+
   // -- the dashboard
   $("#home-new-note").addEventListener("click", createBlankNote);
+  $("#home-quick-add").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = $("#hq-input");
+    const title = input.value.trim();
+    if (!title) return;
+    try {
+      await api.createNote({
+        id: "quick-" + Date.now().toString(36),
+        title,
+        signifier: "task",
+        status: "open",
+        collection: "inbox",
+      });
+      input.value = "";
+      await renderHome();
+    } catch {
+      input.classList.add("is-error");
+      setTimeout(() => input.classList.remove("is-error"), 800);
+    }
+  });
   $("#home-search").addEventListener("keydown", (e) => {
     if (e.key !== "Enter") return;
     e.preventDefault();
@@ -3671,6 +4160,17 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
 
   $("#home-workspaces-action").addEventListener("click", () => showView("workspaces"));
+  $("#home-obsidian-action").addEventListener("click", () => {
+    const obsidian = state.home?.obsidian_notes;
+    if (!obsidian?.length) return;
+    // Open the vault root in Obsidian — the user can navigate from there.
+    const first = obsidian[0].obsidian_url;
+    // Extract the vault param from any note URL and open the vault root.
+    const match = first.match(/[?&]vault=([^&]+)/);
+    if (match) {
+      window.open(`obsidian://open?vault=${match[1]}`, "_blank");
+    }
+  });
   $("#home-today-action").addEventListener("click", async () => {
     const card = state.home?.today_card;
     if (!card) return;
@@ -3883,6 +4383,23 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (e.key === "n" && !typing && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
       createBlankNote();
+    }
+    // Number keys 1-5 collapse/expand board columns
+    if (state.activeView === "board" && !typing && e.key >= "1" && e.key <= "5") {
+      const stages = ["backlog", "todo", "doing", "review", "done"];
+      const idx = parseInt(e.key, 10) - 1;
+      const stage = stages[idx];
+      if (stage) {
+        const col = document.querySelector(`.board-col[data-stage="${stage}"]`);
+        const toggle = col?.querySelector(".board-col__toggle");
+        if (toggle) toggle.click();
+      }
+    }
+    // ? shows keyboard shortcuts (not in typing contexts)
+    if (!typing && e.key === "?" && state.activeView !== "editor") {
+      const el = shortcutsOverlay();
+      if (el && !el.classList.contains("hidden")) closeShortcuts();
+      else openShortcuts();
     }
   });
 

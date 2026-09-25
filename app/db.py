@@ -77,6 +77,7 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("position", "REAL"),
     ("pain", "INTEGER"),
     ("completed", "TEXT"),
+    ("pinned", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 #: Additive columns for the daily-summary ledger, same reasoning as MIGRATIONS.
@@ -144,8 +145,8 @@ class Database:
             INSERT INTO notes (id, collection, title, body, signifier, status,
                                dates_csv, parent_id, created, mood, pain, tags_csv,
                                recurrence, stage, blocked_by_csv, position,
-                               completed, search_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               completed, pinned, search_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 collection=excluded.collection,
                 title=excluded.title,
@@ -163,6 +164,7 @@ class Database:
                 blocked_by_csv=excluded.blocked_by_csv,
                 position=excluded.position,
                 completed=excluded.completed,
+                pinned=excluded.pinned,
                 search_text=excluded.search_text
             """,
             (
@@ -173,6 +175,7 @@ class Database:
                 n.mood, n.pain, tags_csv, n.recurrence,
                 n.stage, ",".join(n.blocked_by), n.position,
                 n.completed.isoformat() if n.completed else None,
+                1 if n.pinned else 0,
                 search_text,
             ),
         )
@@ -431,6 +434,7 @@ class Database:
             recurrence=row["recurrence"],
             stage=row["stage"],
             blocked_by=blocked_by,
+            pinned=bool(row["pinned"]),
             position=row["position"],
             completed=date.fromisoformat(row["completed"]) if row["completed"] else None,
         )

@@ -14,7 +14,8 @@ from app.models import Note, Stage, Status, stage_for_status, reconcile
 
 
 def mk(note_id: str, *, status=Status.OPEN, stage=None, blocked_by=(), position=None,
-       created=date(2026, 1, 1), title=None, signifier="task") -> Note:
+       created=date(2026, 1, 1), title=None, signifier="task",
+       dates=None) -> Note:
     return Note(
         id=note_id,
         collection="inbox",
@@ -26,6 +27,7 @@ def mk(note_id: str, *, status=Status.OPEN, stage=None, blocked_by=(), position=
         blocked_by=list(blocked_by),
         position=position,
         created=created,
+        dates=list(dates) if dates else [],
     )
 
 
@@ -264,5 +266,40 @@ def test_board_summary_separates_ready_from_blocked():
     notes = [blocker, blocked, done]
     by_id = deps.index_by_id(notes)
     assert deps.board_summary(notes, by_id) == {
-        "total": 3, "open": 2, "done": 1, "blocked": 1, "ready": 1,
+        "total": 3, "open": 2, "done": 1, "blocked": 1, "ready": 1, "due_soon": 0,
     }
+
+
+class TestIsDueSoon:
+    def _today(self, offset: int) -> date:
+        return date.today() + __import__("datetime").timedelta(days=offset)
+
+    def test_none_date(self):
+        assert deps._is_due_soon(None, date.today()) is False
+
+    def test_today(self):
+        assert deps._is_due_soon(self._today(0), date.today()) is True
+
+    def test_tomorrow(self):
+        assert deps._is_due_soon(self._today(1), date.today()) is True
+
+    def test_in_two_days(self):
+        assert deps._is_due_soon(self._today(2), date.today()) is True
+
+    def test_in_three_days(self):
+        assert deps._is_due_soon(self._today(3), date.today()) is False
+
+    def test_yesterday(self):
+        assert deps._is_due_soon(self._today(-1), date.today()) is False
+
+
+def test_board_summary_due_soon():
+    from datetime import timedelta
+    today = date.today()
+    due_today = mk("a", created=today, dates=[today])
+    due_tomorrow = mk("b", created=today, dates=[today + timedelta(days=1)])
+    future = mk("c", created=today, dates=[today + timedelta(days=7)])
+    notes = [due_today, due_tomorrow, future]
+    by_id = deps.index_by_id(notes)
+    result = deps.board_summary(notes, by_id)
+    assert result["due_soon"] == 2

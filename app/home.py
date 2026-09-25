@@ -137,6 +137,42 @@ def workspaces_card(states: Sequence[dict]) -> dict:
     }
 
 
+def activity_streak(notes: Sequence[Note], today: date) -> int:
+    """Consecutive days with at least one completed task or mood entry.
+
+    Mood entries are any note in the 'mood' collection.
+    Task completions are any note with a `completed` date.
+    Today is not required to have an entry yet — the streak forgives an
+    unlogged-in-progress day, the same way the mood streak does.
+    """
+    days = set()
+    for n in notes:
+        if n.collection == "mood":
+            # A mood note's date is its first date, or created as fallback
+            if n.dates:
+                days.add(n.dates[0].isoformat())
+            else:
+                days.add(n.created.isoformat())
+        elif n.completed:
+            days.add(n.completed.isoformat())
+
+    if not days:
+        return 0
+
+    # Walk back from today, forgiving an unstarted today
+    cursor = today
+    if cursor.isoformat() not in days:
+        cursor -= timedelta(days=1)
+        if cursor.isoformat() not in days:
+            return 0
+
+    count = 0
+    while cursor.isoformat() in days:
+        count += 1
+        cursor -= timedelta(days=1)
+    return count
+
+
 def summary(
     notes: Sequence[Note],
     *,
@@ -148,6 +184,9 @@ def summary(
     # The folder states someone actually read. A default would let a caller ship
     # a card that quietly says "no workspaces yet" because it never looked.
     workspace_states: Sequence[dict] = (),
+    # Recent notes from a secondary Obsidian vault (e.g. ~/Documents/School).
+    # Each dict has: id, title, obsidian_url, mtime.
+    obsidian_notes: Sequence[dict] = (),
 ) -> dict:
     """Everything the dashboard shows. One call, so the cards agree."""
     # Filtered the way the board view filters before it counts, so the card and
@@ -163,4 +202,6 @@ def summary(
         "today_card": today_card(notes, today),
         "mood": mood_card(notes, today),
         "workspaces": workspaces_card(workspace_states),
+        "obsidian_notes": list(obsidian_notes),
+        "streak": activity_streak(notes, today),
     }

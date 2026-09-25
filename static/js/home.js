@@ -69,6 +69,7 @@ export const BOARD_TILES = [
   ["open", "Open"],
   ["blocked", "Blocked"],
   ["done", "Done"],
+  ["due_soon", "Due Soon", "peach"],
 ];
 
 // A key the server did not send is skipped rather than shown as a dash: the
@@ -77,7 +78,12 @@ export const BOARD_TILES = [
 export function statTiles(stats, spec = TILES) {
   return spec
     .filter(([key]) => stats && stats[key] !== undefined)
-    .map(([key, label]) => ({ key, label, value: stats[key] }));
+    .map((tile) => ({
+      key: tile[0],
+      label: tile[1],
+      value: stats[tile[0]],
+      color: tile[2] || null,
+    }));
 }
 
 export function todayLine(card) {

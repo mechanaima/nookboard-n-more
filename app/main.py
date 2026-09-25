@@ -48,6 +48,7 @@ from .config import Settings, load_settings
 from . import ai
 from . import daily
 from . import transcribe
+from .obsidian_vault import ObsidianVault
 from .transcribe_run import AUDIO_DIRNAME, Transcriber, transcript_of
 from .llm import LLMError, LlamaCpp
 
@@ -75,6 +76,7 @@ class NoteIn(BaseModel):
     tags: list[str] = Field(default_factory=list)
     recurrence: Optional[str] = None
     stage: Optional[str] = None
+    pinned: bool = False
     blocked_by: list[str] = Field(default_factory=list)
     position: Optional[float] = None
 
@@ -332,6 +334,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
     app.state.settings = cfg
     app.state.vault = vault
     app.state.db = db
+    app.state.obsidian_vault = ObsidianVault.from_path(cfg.obsidian_vault) if cfg.obsidian_vault else ObsidianVault.disabled()
 
     @app.get("/api/health")
     def health():
@@ -599,6 +602,7 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
                 existing.completed, complete=status is Status.COMPLETE
             ),
             position=payload.get("position", existing.position),
+            pinned=payload.get("pinned", existing.pinned),
         )
         # The file a note is *leaving*, if its collection changed: a collection
         # is a folder here, so that is a move, and a move recorded halfway shows
@@ -800,6 +804,11 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         today = date.today()
         shown = _coerce_date(month, "month") if month else today
         notes = vault.list_all()
+        obsidian = ObsidianVault.from_path(cfg.obsidian_vault) if cfg.obsidian_vault else ObsidianVault.disabled()
+        obsidian_notes = [
+            {"id": n.id, "title": n.title, "excerpt": n.excerpt, "obsidian_url": n.obsidian_url, "mtime": n.mtime}
+            for n in obsidian.recent_notes(limit=40)
+        ]
         return home.summary(
             notes,
             root=root,
@@ -812,7 +821,24 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             # *every* time the dashboard is: a folder that was moved an hour ago
             # should not still be reported as it was yesterday.
             workspace_states=_workspace_states(notes),
+            obsidian_notes=obsidian_notes,
         )
+
+    @app.get("/api/obsidian")
+    def obsidian_notes_view(limit: int = 8):
+        """Recent notes from the secondary Obsidian vault.
+
+        Returns null when no vault is configured (empty NOOKBOARD_OBSIDIAN_VAULT).
+        Each note carries: id (vault-relative path), title, obsidian_url (deep-link),
+        and mtime (Unix timestamp, newest-first).
+        """
+        obsidian = ObsidianVault.from_path(cfg.obsidian_vault) if cfg.obsidian_vault else ObsidianVault.disabled()
+        if not obsidian.is_enabled():
+            return None
+        return [
+            {"id": n.id, "title": n.title, "excerpt": n.excerpt, "obsidian_url": n.obsidian_url, "mtime": n.mtime}
+            for n in obsidian.recent_notes(limit=limit)
+        ]
 
     @app.get("/api/mood")
     def mood_series(
@@ -962,6 +988,14 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
             "status": moved.status.value,
             "positions": positions,
         }
+
+    @app.post("/api/board/pin")
+    def pin_card(payload: dict):
+        """Toggle the pinned state of a note. Pinned notes float to the top of their board column."""
+        note = _require_note(payload.get("id"))
+        updated = replace(note, pinned=not note.pinned)
+        vault.write(updated)
+        return {"id": updated.id, "pinned": updated.pinned}
 
     @app.get("/api/notes/{note_id}/deps")
     def get_deps(note_id: str):

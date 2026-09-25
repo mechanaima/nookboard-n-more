@@ -4,6 +4,9 @@ Everything is env-overridable so the same code can point at a different vault
 or a different llama.cpp server without edits.
 
   NOOKBOARD_VAULT           path to the Markdown vault  (default <repo>/vault)
+  NOOKBOARD_OBSIDIAN_VAULT path to a secondary Obsidian vault to surface in the
+                            dashboard (e.g. ~/Documents/School). Notes are read but
+                            never written. Leave empty to disable.
   NOOKBOARD_LLM_URL         OpenAI-compatible base URL  (default llama.cpp :11440)
   NOOKBOARD_WHISPER_CLI     whisper-cli to run (default: look in the usual places)
   NOOKBOARD_WHISPER_MODELS  directory of ggml-*.bin models
@@ -73,6 +76,9 @@ class Settings:
     #: cutoff -- the same question ("has the period's cutoff passed?") and one
     #: constant, so the two cannot drift about what "after the cutoff" means.
     weekly_summary: bool = True
+    #: Path to a secondary Obsidian vault to surface in the dashboard (read-only).
+    #: Leave unset (None) to disable.
+    obsidian_vault: Path | None = None
 
     @property
     def llm_chat_url(self) -> str:
@@ -80,6 +86,8 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    obsidian_raw = os.environ.get("NOOKBOARD_OBSIDIAN_VAULT", "").strip()
+    obsidian_vault = Path(obsidian_raw).expanduser().resolve() if obsidian_raw else None
     return Settings(
         vault=_env_path("NOOKBOARD_VAULT", REPO_ROOT / "vault"),
         llm_url=os.environ.get("NOOKBOARD_LLM_URL", "http://127.0.0.1:11440/v1").strip(),
@@ -95,4 +103,5 @@ def load_settings() -> Settings:
         whisper_model=os.environ.get("NOOKBOARD_WHISPER_MODEL", "small").strip() or "small",
         daily_summary_hour=_env_int("NOOKBOARD_DAILY_SUMMARY_HOUR", 22),
         weekly_summary=_env_bool("NOOKBOARD_WEEKLY_SUMMARY", True),
+        obsidian_vault=obsidian_vault,
     )
