@@ -315,8 +315,11 @@ const state = {
   moodPain: null,          // pain staged in the today-log row (null = not set)
 };
 
-const $ = (s) => document.querySelector(s);
-const $$ = (s) => Array.from(document.querySelectorAll(s));
+// Resolve the document lazily so a non-browser (a node --test harness) can
+// install a fake `document` on globalThis before importing this module.
+const resolveDocument = () => (typeof document !== "undefined" ? document : globalThis.document);
+const $ = (s) => resolveDocument().querySelector(s);
+const $$ = (s) => Array.from(resolveDocument().querySelectorAll(s));
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
@@ -347,6 +350,14 @@ function showView(name) {
   if (name === "calendar") renderCalendar();
   render();
   if (name === "home") renderHome();
+  if (name === "board") {
+    // Mark the board busy the moment it is opened, before the fetch answers, so
+    // a slow server shows a skeleton rather than a grid of empty columns.
+    const view = $("#board-view");
+    const columns = $("#board-columns");
+    if (view) view.classList.add("is-loading");
+    if (columns) columns.classList.add("is-loading");
+  }
   if (name === "board") renderBoard();
   if (name === "mood") renderMood();
   if (name === "time") renderTime();
@@ -1269,26 +1280,46 @@ async function renderBoard() {
   if (state.boardCollection) params.collection = state.boardCollection;
   if (state.boardTagFilter) params.tag = state.boardTagFilter;
 
-  let data;
-  try {
-    data = await api.board(params);
-    state.boardError = null;
-  } catch (err) {
-    state.boardError = err.message;
-    return;
-  }
-  state.board = data;
-
-  $("#board-summary").textContent = summaryText(data.summary);
-  renderBoardCollectionFilter();
-  syncBoardToggles();
-
   const wrap = $("#board-columns");
-  wrap.innerHTML = "";
+  const summary = $("#board-summary");
+  if (wrap) wrap.classList.add("is-loading");
+  if (summary) {
+    summary.textContent = "";
+    summary.classList.remove("board-summary--error");
+  }
 
-  const columns = data.columns.filter((c) => !(state.hideDone && c.id === "done"));
-  wrap.style.setProperty("--cols", String(Math.max(columns.length, 1)));
-  for (const col of columns) wrap.appendChild(buildColumn(col));
+  try {
+    const data = await api.board(params);
+    state.boardError = null;
+    state.board = data;
+
+    if (summary) summary.textContent = summaryText(data.summary);
+    renderBoardCollectionFilter();
+    syncBoardToggles();
+
+    wrap.innerHTML = "";
+    const columns = data.columns.filter((c) => !(state.hideDone && c.id === "done"));
+    wrap.style.setProperty("--cols", String(Math.max(columns.length, 1)));
+    for (const col of columns) wrap.appendChild(buildColumn(col));
+  } catch (err) {
+    // The old code returned here, so a failed board load drew a blank grid and
+    // never said why. Fall through to the error line below instead.
+    state.boardError = err.message;
+  }
+
+  // Clear the loading state on BOTH the view and the column grid. `showView`
+  // marks the view busy when the board is opened, and the CSS skeleton is
+  // driven by `.board-view.is-loading`; leaving it set would keep the columns
+  // at opacity 0 forever.
+  if (wrap) wrap.classList.remove("is-loading");
+  const view = $("#board-view");
+  if (view) view.classList.remove("is-loading");
+  const status = $("#board-status");
+  if (status) {
+    if (state.boardError) status.textContent = "Could not read the board: " + state.boardError;
+    else if (state.board) status.textContent = "Show " + state.board.columns.length + " column" + (state.board.columns.length === 1 ? "" : "s");
+    else status.textContent = "";
+  }
 
   if (state.boardError) showBoardError(state.boardError);
 }
@@ -3158,26 +3189,31 @@ function workspaceCard(ws) {
 async function renderWorkspaces() {
   const box = $("#workspace-cards");
   const empty = $("#workspaces-empty");
-  let body;
+  if (box) box.classList.add("is-loading");
+  // Hidden while the fetch is in flight, so a stale "no folders" hint cannot
+  // flash over a list that is on its way.
+  if (empty) empty.classList.add("hidden");
   try {
-    body = await api.workspaces();
+    const body = await api.workspaces();
+    state.workspaceTools = body.tools || {};
+    state.workspaces = body.workspaces || [];
+    $("#workspaces-line").textContent = body.line || "";
+
+    box.replaceChildren(...state.workspaces.map(workspaceCard));
+    const none = state.workspaces.length === 0;
+    if (empty) empty.classList.toggle("hidden", !none);
+    if (none && empty) {
+      empty.textContent = "No notes point at a folder yet. A note with a "
+        + "`path:` is a workspace — set one in the editor's folder row, and this "
+        + "view reads that folder: its branch, what is uncommitted, when it was "
+        + "last committed, and what markers the code still carries.";
+    }
   } catch (err) {
     $("#workspaces-line").textContent = `could not read the folders: ${err.message}`;
     box.replaceChildren();
-    empty.classList.add("hidden");
-    return;
-  }
-  state.workspaceTools = body.tools || {};
-  state.workspaces = body.workspaces || [];
-  $("#workspaces-line").textContent = body.line || "";
-  box.replaceChildren(...state.workspaces.map(workspaceCard));
-  const none = state.workspaces.length === 0;
-  empty.classList.toggle("hidden", !none);
-  if (none) {
-    empty.textContent = "No notes point at a folder yet. A note with a "
-      + "`path:` is a workspace — set one in the editor's folder row, and this "
-      + "view reads that folder: its branch, what is uncommitted, when it was "
-      + "last committed, and what markers the code still carries.";
+    if (empty) empty.classList.add("hidden");
+  } finally {
+    if (box) box.classList.remove("is-loading");
   }
 }
 
@@ -3765,13 +3801,32 @@ function stopRecordClock() {
 async function renderHome() {
   const month = state.homeMonth || new Date();
   const first = localIsoDate(new Date(month.getFullYear(), month.getMonth(), 1));
+  const dash = $("#home-dash-status");
+  const body = $("#home-dash-body");
+  if (dash) dash.classList.add("is-busy");
+  if (body) body.classList.add("is-busy");
   try {
     state.home = await api.home(first);
-  } catch {
-    // Leave the cards standing. An empty dashboard reads as an empty vault,
-    // which is a worse thing to say than a slightly stale one.
+  } catch (err) {
+    // An unreachable server is not an empty vault. Draw that fact where the
+    // dashboard's cards would be, so a first open with no server never reads
+    // as a vault with nothing in it. The busy flag is cleared in BOTH branches.
+    if (dash) dash.textContent = "The server is not reachable right now. "
+      + "Check the terminal you started nookboard in, then try again.";
+    if (body) {
+      body.replaceChildren();
+      const note = document.createElement("p");
+      note.className = "home-empty";
+      note.textContent = "The server is not reachable right now. "
+        + "Check the terminal you started nookboard in, then try again.";
+      body.append(note);
+    }
+    if (dash) dash.classList.remove("is-busy");
+    if (body) body.classList.remove("is-busy");
     return;
   }
+  if (dash) dash.classList.remove("is-busy");
+  if (body) body.classList.remove("is-busy");
   paintHome();
 }
 
@@ -4508,3 +4563,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
   }
 });
+
+// Exported so a `node --test` harness can install a fake document, point the
+// API at a stub and exercise the render helpers without a browser.
+export { state, api, renderHome, renderWorkspaces };

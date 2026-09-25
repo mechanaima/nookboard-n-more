@@ -237,6 +237,17 @@ def test_done_tasks_with_no_scope_lists_finished_work():
 
 
 def test_done_tasks_says_nothing_when_nothing_is_finished():
+    # Empty answer is said, not blanked out, so the empty list does not look
+    # like a query that failed. Pass an open task in the scope so `_named`
+    # accepts the collection; `_by_status` then strips it out.
+    notes = [_task("a", "Tidy desk", status=Status.OPEN, collection="work")]
+    out = query.render("done tasks in work", notes, on=THURSDAY)
+    assert "Nothing" in out
+    assert "done" in out
+    assert "work" in out
+
+
+def test_done_tasks_refuses_a_named_collection_the_vault_lacks():
     # A named collection is validated before status filtering, so an empty vault
     # answers with the same "none" refusal shape as `open tasks in work`.
     out = query.render("done tasks in work", [], on=THURSDAY)
@@ -246,7 +257,18 @@ def test_done_tasks_says_nothing_when_nothing_is_finished():
 
 def test_done_tasks_refuses_an_unknown_tag_by_name():
     # The same refusal shape `_named` and `_tagged` use, so a typo does not
-    # silently render as an empty list.
+    # silently render as an empty list. `render` swallows `QueryError` so a
+    # note still draws; the answer is the "not understood" marker it stands
+    # in for.
+    out = query.render("done tasks in #nope", [], on=THURSDAY)
+    assert "Query not understood" in out
+    assert "#nope" in out
+
+
+def test_an_unknown_tag_suggests_the_tags_the_vault_has():
+    # An empty vault can only say the tag is missing. Once the vault has tags,
+    # the refusal names them, so a typo points at the near miss instead of
+    # leaving you to guess what was meant.
     notes = [
         Note(
             id="a", collection="school", title="Assignment 1", body="",

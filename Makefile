@@ -1,7 +1,13 @@
-.PHONY: dev test test-js test-tz check-render check shot clean
+.PHONY: dev mcp test test-js test-tz check-render check shot clean
 
 dev:
 	uv run uvicorn app.main:app --reload --port 8765 --host 127.0.0.1
+
+# MCP server exposing the Nookboard API as agent tools over stdio.
+# It starts the local API when one is not already listening.
+# Configure the endpoint with NOOKBOARD_MCP_BASE and the vault with NOOKBOARD_VAULT.
+mcp:
+	uv run python -m nookboard_mcp
 
 test:
 	uv run pytest -x
