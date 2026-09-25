@@ -237,18 +237,26 @@ def test_done_tasks_with_no_scope_lists_finished_work():
 
 
 def test_done_tasks_says_nothing_when_nothing_is_finished():
-    # Empty answer is said, not blanked out, so the empty list does not look
-    # like a query that failed.
+    # A named collection is validated before status filtering, so an empty vault
+    # answers with the same "none" refusal shape as `open tasks in work`.
     out = query.render("done tasks in work", [], on=THURSDAY)
-    assert "Nothing" in out
+    assert "none" in out
     assert "work" in out
 
 
 def test_done_tasks_refuses_an_unknown_tag_by_name():
     # The same refusal shape `_named` and `_tagged` use, so a typo does not
     # silently render as an empty list.
-    with pytest.raises(query.QueryError):
-        query.parse("done tasks in #nope")
+    notes = [
+        Note(
+            id="a", collection="school", title="Assignment 1", body="",
+            signifier=Signifier.TASK, status=Status.COMPLETE,
+            completed=THURSDAY, tags=["programming"],
+        ),
+    ]
+    out = query.render("done tasks in #nope", notes, on=THURSDAY)
+    assert "no `#nope` tag" in out
+    assert "#programming" in out
 
 
 # --- what a period covers -------------------------------------------------
