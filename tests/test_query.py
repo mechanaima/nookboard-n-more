@@ -176,6 +176,81 @@ def test_a_stray_word_after_open_is_not_read_as_a_collection():
         assert "open tasks in work" in out, bad
 
 
+# --- done tasks: finished work, no period --------------------------------
+
+
+def test_done_tasks_can_be_narrowed_to_one_collection():
+    # The mirror of `open tasks in work`: same scope rules, opposite status.
+    # A task marked complete is "done"; one left open or set aside is not.
+    notes = [
+        _task("a", "Ship zine", completed=THURSDAY, status=Status.COMPLETE, collection="work"),
+        _task("b", "Buy ink", completed=THURSDAY, status=Status.COMPLETE, collection="journal"),
+        _task("c", "Tidy desk", status=Status.OPEN, collection="work"),
+    ]
+    out = query.render("done tasks in work", notes, on=THURSDAY)
+    assert "Ship zine" in out
+    assert "Buy ink" not in out
+    assert "Tidy desk" not in out
+
+
+def test_done_tasks_can_be_narrowed_to_one_tag():
+    # `#tag` routes to the tag path the same way `open tasks` does.
+    notes = [
+        Note(
+            id="a", collection="school", title="Assignment 1", body="",
+            signifier=Signifier.TASK, status=Status.COMPLETE,
+            completed=THURSDAY, tags=["programming"],
+        ),
+        Note(
+            id="b", collection="school", title="Lab 2", body="",
+            signifier=Signifier.TASK, status=Status.COMPLETE,
+            completed=THURSDAY, tags=["history"],
+        ),
+    ]
+    out = query.render("done tasks in #programming", notes, on=THURSDAY)
+    assert "Assignment 1" in out
+    assert "Lab 2" not in out
+
+
+def test_done_tasks_excludes_irrelevant_and_migrated():
+    # `done` means complete, not closed. A task set aside was not finished.
+    notes = [
+        _task("a", "Ship zine", completed=THURSDAY, status=Status.COMPLETE, collection="work"),
+        _task("b", "Later idea", status=Status.IRRELEVANT, collection="work"),
+        _task("c", "Old job", status=Status.MIGRATED, collection="work"),
+    ]
+    out = query.render("done tasks in work", notes, on=THURSDAY)
+    assert "Ship zine" in out
+    assert "Later idea" not in out
+    assert "Old job" not in out
+
+
+def test_done_tasks_with_no_scope_lists_finished_work():
+    # No `in <scope>`: same default pool as `open tasks`, just the other side.
+    notes = [
+        _task("a", "Ship zine", completed=THURSDAY, status=Status.COMPLETE, collection="work"),
+        _task("b", "Tidy desk", status=Status.OPEN, collection="work"),
+    ]
+    out = query.render("done tasks", notes, on=THURSDAY)
+    assert "Ship zine" in out
+    assert "Tidy desk" not in out
+
+
+def test_done_tasks_says_nothing_when_nothing_is_finished():
+    # Empty answer is said, not blanked out, so the empty list does not look
+    # like a query that failed.
+    out = query.render("done tasks in work", [], on=THURSDAY)
+    assert "Nothing" in out
+    assert "work" in out
+
+
+def test_done_tasks_refuses_an_unknown_tag_by_name():
+    # The same refusal shape `_named` and `_tagged` use, so a typo does not
+    # silently render as an empty list.
+    with pytest.raises(query.QueryError):
+        query.parse("done tasks in #nope")
+
+
 # --- what a period covers -------------------------------------------------
 
 def test_named_periods():

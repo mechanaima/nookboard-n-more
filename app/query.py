@@ -40,7 +40,8 @@ NAMED_PERIODS = (
 #: nothing is worse than one that says it did not follow you -- you would go on
 #: believing the note was empty rather than that the query was wrong.
 EXPECTED = (
-    "`completed this week`, `days this week`, `open tasks`, or `show notes in #mood`"
+    "`completed this week`, `days this week`, `open tasks`, "
+    "`done tasks in #mood`, or `show notes in #mood`"
 )
 
 
@@ -132,6 +133,31 @@ def parse(text: str) -> Query:
                 raise QueryError("`#` on its own does not name a tag")
             return Query(verb="open", tag=tag, source=source)
         return Query(verb="open", collection=scope, source=source)
+
+    # `done` is the mirror of `open`: the tasks that are complete, with the
+    # same `tasks in <scope>` shape and the same `#tag` vs collection split.
+    # It deliberately has no period -- "what was finished this week" is what
+    # `completed` is for, and using the same word for both would mean two
+    # questions sharing a name.
+    if raw == "done" or raw.startswith("done "):
+        rest = source[len("done") :].strip()
+        if rest[:5].lower() == "tasks":
+            rest = rest[5:].strip()
+        if not rest:
+            return Query(verb="done", source=source)
+        match = re.match(r"(?i)in\s+(\S.*)$", rest)
+        if not match:
+            raise QueryError(
+                "don't know how to read `{source}` — try `done tasks` or "
+                "`done tasks in work`"
+            )
+        scope = match.group(1).strip()
+        if scope.startswith("#"):
+            tag = scope[1:].strip()
+            if not tag:
+                raise QueryError("`#` on its own does not name a tag")
+            return Query(verb="done", tag=tag, source=source)
+        return Query(verb="done", collection=scope, source=source)
 
     # `show` lists notes rather than work, and says which ones: a tag or a
     # collection. It has no default, deliberately -- `show notes` on its own is
@@ -307,6 +333,21 @@ def resolve(query: Query, notes: Sequence[Note], *, on: date) -> str:
 
     if query.verb == "open":
         return _open_markdown(pool)
+    if query.verb == "done":
+        # Reuse `_show_markdown` so a `done tasks in #programming` answer reads
+        # the same as `show notes in #programming done` -- the only difference
+        # is which word you wrote, and the answer should not change with it.
+        # A fresh Query keeps `source` truthful to what was actually parsed.
+        return _show_markdown(
+            _by_status(pool, "done"),
+            Query(
+                verb="show",
+                tag=query.tag,
+                collection=query.collection,
+                status="done",
+                source=query.source,
+            ),
+        )
     if query.verb == "show":
         return _show_markdown(_by_status(pool, query.status), query)
     if query.verb != "completed":
