@@ -6,6 +6,7 @@ cards, and read back what the board would draw.
 from __future__ import annotations
 
 import sqlite3
+from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -19,7 +20,7 @@ def client(tmp_path: Path) -> TestClient:
 
 
 def task(c: TestClient, note_id: str, *, title=None, blocked_by=None, stage=None,
-         status="open", collection="inbox"):
+         status="open", collection="inbox", dates=None):
     payload = {
         "id": note_id,
         "collection": collection,
@@ -32,6 +33,8 @@ def task(c: TestClient, note_id: str, *, title=None, blocked_by=None, stage=None
         payload["blocked_by"] = blocked_by
     if stage is not None:
         payload["stage"] = stage
+    if dates is not None:
+        payload["dates"] = dates
     r = c.post("/api/notes", json=payload)
     assert r.status_code == 201, r.text
     return r.json()
@@ -73,6 +76,40 @@ def test_completed_task_lands_in_done(tmp_path):
     assert [x["id"] for x in column(c.get("/api/board").json(), "done")["cards"]] == ["a"]
 
 
+def test_completed_due_task_is_not_in_the_due_soon_count(tmp_path):
+    c = client(tmp_path)
+    task(c, "finished", status="complete", dates=[date.today().isoformat()])
+
+    summary = c.get("/api/board").json()["summary"]
+
+    assert summary["due_soon"] == 0
+
+
+def test_due_soon_includes_two_days_out_but_not_three(tmp_path):
+    c = client(tmp_path)
+    today = date.today()
+    task(c, "within", dates=[(today + timedelta(days=2)).isoformat()])
+    task(c, "outside", dates=[(today + timedelta(days=3)).isoformat()])
+
+    summary = c.get("/api/board").json()["summary"]
+
+    assert summary["due_soon"] == 1
+
+
+def test_due_soon_checks_every_date_on_an_open_task(tmp_path):
+    c = client(tmp_path)
+    today = date.today()
+    task(
+        c,
+        "multi-day",
+        dates=[(today + timedelta(days=7)).isoformat(), today.isoformat()],
+    )
+
+    summary = c.get("/api/board").json()["summary"]
+
+    assert summary["due_soon"] == 1
+
+
 def test_backlog_is_reachable_by_placing_a_card(tmp_path):
     c = client(tmp_path)
     task(c, "a", stage="backlog")
@@ -99,7 +136,9 @@ def test_summary_counts_ready_and_blocked(tmp_path):
     task(c, "dependent", blocked_by=["blocker"])
     task(c, "free")
     summary = c.get("/api/board").json()["summary"]
-    assert summary == {"total": 3, "open": 3, "done": 0, "blocked": 1, "ready": 2}
+    assert summary == {
+        "total": 3, "open": 3, "done": 0, "blocked": 1, "ready": 2, "due_soon": 0,
+    }
 
 
 def test_completing_a_blocker_unblocks_the_dependent(tmp_path):

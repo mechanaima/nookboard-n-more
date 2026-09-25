@@ -238,17 +238,23 @@ def test_done_tasks_with_no_scope_lists_finished_work():
 
 def test_done_tasks_says_nothing_when_nothing_is_finished():
     # Empty answer is said, not blanked out, so the empty list does not look
-    # like a query that failed.
-    out = query.render("done tasks in work", [], on=THURSDAY)
+    # like a query that failed. Pass an open task in the scope so `_named`
+    # accepts the collection; `_by_status` then strips it out.
+    notes = [_task("a", "Tidy desk", status=Status.OPEN, collection="work")]
+    out = query.render("done tasks in work", notes, on=THURSDAY)
     assert "Nothing" in out
+    assert "done" in out
     assert "work" in out
 
 
 def test_done_tasks_refuses_an_unknown_tag_by_name():
     # The same refusal shape `_named` and `_tagged` use, so a typo does not
-    # silently render as an empty list.
-    with pytest.raises(query.QueryError):
-        query.parse("done tasks in #nope")
+    # silently render as an empty list. `render` swallows `QueryError` so a
+    # note still draws; the answer is the "not understood" marker it stands
+    # in for.
+    out = query.render("done tasks in #nope", [], on=THURSDAY)
+    assert "Query not understood" in out
+    assert "#nope" in out
 
 
 # --- what a period covers -------------------------------------------------

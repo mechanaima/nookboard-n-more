@@ -36,6 +36,17 @@ on it live, run it somewhere else and leave this one alone:
 uv run uvicorn app.main:app --reload --port 8796
 ```
 
+## Working on this repo
+
+Read [`AGENTS.md`](AGENTS.md) before editing. It is the working agreement for
+anyone (agent or human) changing this code: edit discipline, the commands to
+verify with, git etiquette, and what to do if something breaks.
+
+The front end has no build step, so a syntax error in `static/js/app.js` ships
+straight to the browser and blanks *every* view. Run `make check` before calling
+a change done — it ends with `tools/check_render.sh`, which loads each view in
+headless Chromium and asserts it actually painted.
+
 ## Install it as an app
 
 It is a PWA, so Chromium will offer to install it (the icon in the address bar,

@@ -256,8 +256,8 @@ def board_summary(notes: Sequence[Note], by_id: Mapping[str, Note]) -> dict:
     blocked = [n for n in open_notes if is_blocked(n, by_id)]
     today = date.today()
     due_soon = sum(
-        1 for n in notes
-        if n.dates and _is_due_soon(n.dates[0], today)
+        1 for n in open_notes
+        if any(_is_due_soon(day, today) for day in n.dates)
     )
     return {
         "total": len(notes),

@@ -1870,6 +1870,25 @@ hr.starry {
 }
 .board-view.hidden { display: none; }
 
+/* Dashboard board card: a busy state and an explicit empty/offline note. */
+#home-dash-body.is-busy::before {
+  content: ""; display: block;
+  height: 140px; margin-bottom: 4px;
+  border-radius: var(--r-md);
+  background:
+    repeating-linear-gradient(90deg, var(--surface0) 0, var(--surface0) 70px, var(--line) 70px, var(--line) 74px);
+  animation: pulse 1.4s var(--ease-out) infinite;
+}
+#home-dash-status.is-busy { color: var(--mauve); }
+
+.home-empty {
+  font-size: 12.5px;
+  color: var(--fg-faint);
+  padding: 6px 0;
+  line-height: 1.4;
+}
+
+
 .board-columns {
   display: grid;
   grid-template-columns: repeat(5, minmax(230px, 1fr));
@@ -1932,6 +1951,21 @@ hr.starry {
    dependency cycle has to land somewhere visible, and there is no other spot. */
 .board-summary--error { color: var(--red); font-weight: 600; white-space: normal; }
 .board-new { min-height: 34px; padding: 6px 14px; font-size: 12.5px; }
+
+/* Loading skeleton for the board view — a view that is still fetching must not
+   sit there as a grid of (empty) columns. */
+.board-view.is-loading .board-columns { opacity: 0; }
+.board-view.is-loading .board-columns .board-col__cards { display: none; }
+.board-view.is-loading .board-columns .board-col__empty { display: none; }
+.board-view.is-loading .board-columns::after {
+  content: ""; display: block;
+  height: 180px; margin: 8px 0 0 0;
+  border-radius: var(--r-md);
+  background:
+    repeating-linear-gradient(90deg, var(--surface0) 0, var(--surface0) 80px, var(--line) 80px, var(--line) 84px);
+  animation: pulse 1.4s var(--ease-out) infinite;
+}
+
 
 .board-hint {
   margin: 0 0 12px;

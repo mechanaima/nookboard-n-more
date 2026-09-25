@@ -343,8 +343,11 @@ check_home "today action labelled"        'id="home-today-action"[^>]*>[^<]+<'
 check_home "entry actions offered"        'data-entry="task"'
 check_home "view jumps offered"           'data-jump="collections"'
 check_home "stats card describes the vault" 'id="home-stats"'
-# Four vault tiles plus four board tiles; the two containers hold the same class.
-check_count "$HOME_DOM" "eight tiles across two cards" 'class="h-tile"' 8
+# Four vault tiles plus the board card's own tiles, in the same container class.
+# A minimum, not an exact count: the board card legitimately grows a fifth tile
+# (`due soon`) whenever the vault happens to have work falling due, and a check
+# that runs against a real vault must not assume it is the only thing in it.
+check_min "$HOME_DOM" "both cards carry tiles" 'class="h-tile"' 8
 check_home_absent "clock not left as a placeholder" 'id="home-time"[^>]*>—<'
 check_home_absent "dashboard not left hidden"       'id="home-view" class="home-view hidden"'
 

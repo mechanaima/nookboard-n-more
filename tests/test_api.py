@@ -4,6 +4,81 @@ from pathlib import Path
 from app.main import create_app
 
 
+def test_public_api_operation_contract(tmp_path: Path):
+    """The paths, methods, and generated operation names clients may rely on."""
+    expected = {
+        ("/", "get", "index__get"),
+        ("/api/health", "get", "health_api_health_get"),
+        ("/api/config", "get", "get_config_api_config_get"),
+        ("/api/collections", "get", "list_collections_api_collections_get"),
+        ("/api/notes", "get", "list_notes_api_notes_get"),
+        ("/api/notes", "post", "create_note_api_notes_post"),
+        ("/api/notes/{note_id}", "get", "get_note_api_notes__note_id__get"),
+        ("/api/notes/{note_id}", "patch", "update_note_api_notes__note_id__patch"),
+        ("/api/notes/{note_id}", "delete", "delete_note_api_notes__note_id__delete"),
+        ("/api/notes/{note_id}/backlinks", "get", "get_backlinks_api_notes__note_id__backlinks_get"),
+        ("/api/notes/{note_id}/deps", "get", "get_deps_api_notes__note_id__deps_get"),
+        ("/api/notes/{note_id}/deps", "post", "add_dep_api_notes__note_id__deps_post"),
+        ("/api/notes/{note_id}/deps/{blocker_id}", "delete", "remove_dep_api_notes__note_id__deps__blocker_id__delete"),
+        ("/api/search", "get", "search_api_search_get"),
+        ("/api/tasks", "get", "list_tasks_api_tasks_get"),
+        ("/api/recurring/run", "post", "trigger_recurring_api_recurring_run_post"),
+        ("/api/board", "get", "board_api_board_get"),
+        ("/api/board/move", "post", "move_card_api_board_move_post"),
+        ("/api/board/pin", "post", "pin_card_api_board_pin_post"),
+        ("/api/history", "get", "history_state_api_history_get"),
+        ("/api/history/init", "post", "history_init_api_history_init_post"),
+        ("/api/history/checkpoint", "post", "history_checkpoint_api_history_checkpoint_post"),
+        ("/api/history/{note_id}", "get", "note_history_api_history__note_id__get"),
+        ("/api/history/restore", "post", "restore_version_api_history_restore_post"),
+        ("/api/workspaces", "get", "list_workspaces_api_workspaces_get"),
+        ("/api/workspaces/{note_id}", "get", "get_workspace_api_workspaces__note_id__get"),
+        ("/api/workspaces/{note_id}/open", "post", "open_workspace_api_workspaces__note_id__open_post"),
+        ("/api/bookmarks", "get", "list_bookmarks_api_bookmarks_get"),
+        ("/api/bookmarks/check", "post", "check_bookmarks_api_bookmarks_check_post"),
+        ("/api/home", "get", "home_view_api_home_get"),
+        ("/api/insight", "get", "insights_api_insight_get"),
+        ("/api/obsidian", "get", "obsidian_notes_view_api_obsidian_get"),
+        ("/api/mood", "get", "mood_series_api_mood_get"),
+        ("/api/calendar/{year}/{month}", "get", "calendar_api_calendar__year___month__get"),
+        ("/api/calendar.ics", "get", "calendar_ics_api_calendar_ics_get"),
+        ("/api/export.zip", "get", "export_zip_api_export_zip_get"),
+        ("/api/rebuild-index", "post", "rebuild_index_api_rebuild_index_post"),
+        ("/api/ai/summarize", "post", "ai_summarize_api_ai_summarize_post"),
+        ("/api/ai/tags", "post", "ai_tags_api_ai_tags_post"),
+        ("/api/ai/links", "post", "ai_links_api_ai_links_post"),
+        ("/api/ai/ask", "post", "ai_ask_api_ai_ask_post"),
+        ("/api/transcribe", "get", "transcribe_status_api_transcribe_get"),
+        ("/api/transcribe", "post", "transcribe_file_api_transcribe_post"),
+        ("/api/transcribe/upload", "post", "transcribe_upload_api_transcribe_upload_post"),
+        ("/api/transcribe/{job_id}", "get", "transcribe_job_api_transcribe__job_id__get"),
+        ("/api/transcribe/summarize", "post", "transcribe_resummarize_api_transcribe_summarize_post"),
+        ("/api/daily", "get", "daily_pending_api_daily_get"),
+        ("/api/daily/{day}", "get", "daily_state_api_daily__day__get"),
+        ("/api/daily/summary", "post", "daily_summary_api_daily_summary_post"),
+        ("/api/weekly", "get", "weekly_pending_api_weekly_get"),
+        ("/api/weekly/{key}", "get", "weekly_state_api_weekly__key__get"),
+        ("/api/weekly/summary", "post", "weekly_summary_api_weekly_summary_post"),
+        ("/api/templates", "get", "list_templates_api_templates_get"),
+        ("/api/templates/apply", "post", "apply_template_api_templates_apply_post"),
+        ("/api/query", "get", "run_query_api_query_get"),
+        ("/manifest.webmanifest", "get", "web_manifest_manifest_webmanifest_get"),
+        ("/service-worker.js", "get", "service_worker_service_worker_js_get"),
+    }
+    schema = create_app(vault_root=tmp_path).openapi()
+    actual = {
+        (path, method, operation["operationId"])
+        for path, item in schema["paths"].items()
+        for method, operation in item.items()
+    }
+
+    assert len(expected) == 57
+    assert actual == expected, {
+        "missing": sorted(expected - actual),
+        "unexpected": sorted(actual - expected),
+    }
+
+
 def test_create_and_list_note(tmp_path: Path):
     app = create_app(vault_root=tmp_path)
     c = TestClient(app)
