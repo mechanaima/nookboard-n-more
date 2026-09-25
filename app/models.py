@@ -315,7 +315,7 @@ def coerce_pain(value: object) -> Optional[int]:
 CLAIMED_KEYS = frozenset({
     "id", "collection", "title", "signifier", "status", "dates", "at", "until",
     "path", "url", "icon", "parent_id", "created", "mood", "pain", "tags",
-    "recurrence", "stage", "blocked_by", "position", "completed", "aliases",
+    "recurrence", "stage", "blocked_by", "position", "pinned", "completed", "aliases",
 })
 
 
@@ -430,6 +430,7 @@ class Note:
             "stage": self.stage,
             "blocked_by": list(self.blocked_by),
             "position": self.position,
+            "pinned": self.pinned,
             "completed": self.completed.isoformat() if self.completed else None,
         }}
         # Obsidian resolves [[Title]] by filename or alias, never by our
@@ -549,6 +550,7 @@ class Note:
             stage=stage,
             blocked_by=blocked_by,
             position=position,
+            pinned=bool(meta.get("pinned", False)),
             completed=completed,
         )
 
