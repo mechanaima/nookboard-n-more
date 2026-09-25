@@ -27,5 +27,8 @@ jobs:
       - name: Install dependencies (locked)
         run: uv sync --frozen --dev
 
+      - name: Install ffmpeg (the transcription tests shell out to ffprobe/ffmpeg)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Run tests under tests/
         run: make test
