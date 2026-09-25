@@ -676,6 +676,23 @@ body::after {
   box-shadow: var(--glass-light);
   border-color: color-mix(in srgb, var(--mauve) 45%, transparent);
 }
+.entry.is-pinned { border-left: 3px solid var(--lavender); }
+.entry.is-pinned .glyph { color: var(--lavender); }
+.entry-pin {
+  opacity: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: var(--r-sm);
+  color: var(--fg-faint);
+  align-self: center;
+  flex-shrink: 0;
+}
+.entry:hover .entry-pin,
+.entry-pin.is-pinned { opacity: 1; }
+.entry-pin:hover { color: var(--lavender); }
 
 /* signifier badge */
 .glyph {
@@ -1879,6 +1896,8 @@ hr.starry {
   font-size: 12.5px;
   border-radius: var(--r-md);
 }
+
+
 
 /* Pill toggles for the board filters — small, but with a real hit area. */
 .chip-toggle {

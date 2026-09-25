@@ -286,6 +286,7 @@ const state = {
   activeMood: null,
   activePain: null,
   rapidFilterCollection: null, // null = show all
+  rapidTagFilter: null,      // tag filter string
   templates: [],               // shapes a note can be made from
   editorMode: "split",
   calYear: new Date().getFullYear(),
@@ -513,6 +514,21 @@ function buildEntry(note, opts = {}) {
     li.appendChild(rc);
   }
 
+  // Pin button — visible on hover, toggles pinned state
+  if (opts.showPin !== false) {
+    const pinBtn = document.createElement("button");
+    pinBtn.type = "button";
+    pinBtn.className = "entry-pin" + (note.pinned ? " is-pinned" : "");
+    pinBtn.title = note.pinned ? "unpin" : "pin to top";
+    pinBtn.setAttribute("aria-label", note.pinned ? "unpin" : "pin to top");
+    pinBtn.textContent = note.pinned ? "📌" : "📍";
+    pinBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      togglePin(note.id);
+    });
+    li.appendChild(pinBtn);
+  }
+
   li.addEventListener("click", () => openEditor(note.id));
   return li;
 }
@@ -579,13 +595,21 @@ function renderRapid() {
   if (state.rapidFilterCollection) {
     notes = notes.filter((n) => n.collection === state.rapidFilterCollection);
   }
-  notes.sort((a, b) => (b.dates?.[0] || "").localeCompare(a.dates?.[0] || ""));
+  if (state.rapidTagFilter) {
+    notes = notes.filter((n) => n.tags?.includes(state.rapidTagFilter));
+  }
+  // Pinned first, then by date descending
+  notes.sort((a, b) => {
+    if (b.pinned !== a.pinned) return (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+    return (b.dates?.[0] || "").localeCompare(a.dates?.[0] || "");
+  });
 
   notes.forEach((n, i) => {
     const li = buildEntry(n, { animate: true, index: i });
     if (n.id === state.flashId) {
       li.classList.add("just-completed");
     }
+    if (n.pinned) li.classList.add("is-pinned");
     ul.appendChild(li);
   });
   state.flashId = null;
@@ -994,7 +1018,17 @@ async function submitTemplate(e) {
 async function submitRapid(e) {
   e.preventDefault();
   const input = $("#rapid-input");
-  const parsed = parseRapidInput(input.value);
+  const raw = input.value.trim();
+
+  // #tag alone = filter the rapid log; nothing created
+  if (raw.startsWith("#")) {
+    state.rapidTagFilter = raw.slice(1);
+    input.value = "";
+    renderRapid();
+    return;
+  }
+
+  const parsed = parseRapidInput(raw);
   if (!parsed) return;
   await api.createNote(parsed);
   input.value = "";
