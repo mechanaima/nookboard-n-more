@@ -26,16 +26,11 @@ from .models import (
     MOOD_LEVELS, PAIN_MAX, PAIN_MIN, STAGE_LABELS, Note, Signifier, Stage, Status,
     coerce_pain, not_work_reason, reconcile, stage_for_status, stamp_completed,
 )
-from . import bookmarks
 from . import health
 from . import pwa
-from . import health_run
-from . import history
-from . import history_run
 from . import home
 from . import insight
 from . import workspace
-from . import workspace_run
 from . import mood as moodlib
 from . import query as querylib
 from . import schedule
@@ -51,6 +46,10 @@ from . import transcribe
 from .obsidian_vault import ObsidianVault
 from .transcribe_run import AUDIO_DIRNAME, Transcriber, transcript_of
 from .llm import LLMError, LlamaCpp
+from .history_api import build_history_router
+from .workspace_api import build_workspace_router
+from .bookmark_api import build_bookmark_router
+from .template_api import build_template_router
 
 
 class NoteIn(BaseModel):
@@ -406,6 +405,10 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         except KeyError:
             raise HTTPException(404, "note not found")
 
+    history_router, _record = build_history_router(vault, db, _require_note)
+    workspace_router, _workspace_states = build_workspace_router(vault)
+    bookmark_router = build_bookmark_router(vault)
+
     def _index() -> tuple[list[Note], dict[str, Note]]:
         notes = vault.list_all()
         return notes, index_by_id(notes)
@@ -628,159 +631,8 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         return None
 
     # -- history -------------------------------------------------------------
-    #
-    # The vault is a folder of ordinary markdown, which is what makes a history
-    # possible at all: git, in the folder, invisible. Nothing here runs on a
-    # schedule and nothing here needs a server -- the vault's past is a `.git`
-    # beside its notes, readable with the same git the notes are readable with.
-
-    def _rel_of(path) -> str:
-        """A path the vault just wrote, as the vault sees it."""
-        if not path:
-            return ""
-        try:
-            return str(Path(path).relative_to(vault.root))
-        except ValueError:
-            # A path outside the vault is not history this app keeps.
-            return ""
-
-    def _record(act: str, title: str, paths) -> dict:
-        """Record one change in the vault's history.
-
-        Always called *after* the write it describes, which is the ordering that
-        makes a history safe: the note is already on disk, so this can only add
-        information. `{"on": False}` when history is off -- not an error, and the
-        same key every time rather than one that appears when convenient.
-        """
-        root = str(vault.root)
-        if not history_run.is_repo(root):
-            return {"on": False}
-        rels = [r for r in (_rel_of(p) for p in paths) if r]
-        return {"on": True, **history_run.commit_change(root, rels, act, title)}
-
-    def _deleted() -> list[dict]:
-        """Notes the vault has lost, each with the version that brings it back.
-
-        A note that has since been recreated is not lost, so it is not offered:
-        asking "restore this?" about something already there is a question whose
-        answer the app already knows.
-        """
-        root = str(vault.root)
-        now = datetime.now(timezone.utc)
-        out = []
-        for entry in history_run.deletions(root):
-            rel = history.safe_relpath(root, entry["path"])
-            if not rel or (Path(root) / rel).exists():
-                continue
-            out.append({**entry, "path": rel, "words": history.version_words(entry, now),
-                        "clock": history.clock_label(entry["when"])})
-        return out
-
-    def _history_state() -> dict:
-        root = str(vault.root)
-        if not history_run.is_repo(root):
-            return {
-                "on": False, "changes": [], "deleted": [], "pending": [],
-                "summary": "History is off.",
-                "why": "Turning it on puts this vault under git, so every change "
-                       "from here on can be undone.",
-            }
-        now = datetime.now(timezone.utc)
-        # The baseline commit is where the vault started, not a change to it --
-        # "2 changes recorded" the moment history is turned on would be counting
-        # the act of counting.
-        changes = [{**e, "words": history.version_words(e, now),
-                    "clock": history.clock_label(e["when"])}
-                   for e in history_run.log_for(root, limit=25)
-                   if e["subject"] != history_run.FIRST_COMMIT]
-        pending = history_run.pending(root)
-        deleted = _deleted()
-        return {
-            "on": True, "why": "", "changes": changes, "deleted": deleted,
-            "pending": pending,
-            "summary": history.summary_line(changes, deleted, now, len(pending)),
-        }
-
-    @app.get("/api/history")
-    def history_state():
-        """The vault's past: what changed, what is not recorded, what is gone."""
-        return _history_state()
-
-    @app.post("/api/history/init")
-    def history_init():
-        """Start keeping history.
-
-        Explicit rather than automatic, because it writes a `.git` into someone's
-        vault: that is a thing to be asked for, not a thing to happen to you.
-        """
-        result = history_run.ensure_repo(str(vault.root))
-        if not result.get("ok"):
-            raise HTTPException(500, f"could not start keeping history: {result.get('why')}")
-        return {**_history_state(), "started": result}
-
-    @app.post("/api/history/checkpoint")
-    def history_checkpoint():
-        """Record everything that has changed, now, because someone asked."""
-        root = str(vault.root)
-        if not history_run.is_repo(root):
-            raise HTTPException(400, "history is not on for this vault")
-        result = history_run.checkpoint(root)
-        if not result.get("ok"):
-            raise HTTPException(500, f"could not record these changes: {result.get('why')}")
-        return {**_history_state(), "recorded": result}
-
-    @app.get("/api/history/{note_id}")
-    def note_history(note_id: str):
-        """One note's versions, newest first.
-
-        A note with no file of its own has no history to show, and says so rather
-        than showing an empty list that reads as "nothing ever happened here".
-        """
-        note = _require_note(note_id)
-        root = str(vault.root)
-        rel = note.source_rel or ""
-        if not history_run.is_repo(root):
-            return {"on": False, "note_id": note_id, "relpath": rel, "versions": [], "why": ""}
-        if not rel:
-            return {"on": True, "note_id": note_id, "relpath": "", "versions": [],
-                    "why": "this note has no file of its own yet"}
-        now = datetime.now(timezone.utc)
-        versions = [{**e, "words": history.version_words(e, now),
-                     "clock": history.clock_label(e["when"])}
-                    for e in history_run.log_for(root, rel, limit=40)]
-        # Whether the newest version is the one on disk is *measured*: a note
-        # edited outside the app is not its own newest commit.
-        if versions:
-            versions[0]["is_now"] = history_run.matches_now(root, rel, versions[0]["sha"])
-        return {"on": True, "note_id": note_id, "relpath": rel, "versions": versions,
-                "why": "" if versions else "nothing recorded for this note yet"}
-
-    @app.post("/api/history/restore")
-    def restore_version(payload: dict):
-        """Put one file back the way it was, and record that it was put back.
-
-        Identified by *path*, not by note id, because that is what a version is a
-        version of -- and because the case this exists for is a note that was
-        deleted, which has no note record left to look itself up by.
-
-        One file, written from one old version: not a `git reset`. Nothing else in
-        the vault can move, which is what makes this safe to offer as a button.
-        """
-        rev = str(payload.get("rev") or "").strip()
-        rel = str(payload.get("path") or "").strip()
-        if not rev:
-            raise HTTPException(400, "which version? pass rev")
-        if not rel:
-            raise HTTPException(400, "which file? pass path")
-        result = history_run.restore_version(str(vault.root), rel, rev)
-        if not result.get("ok"):
-            raise HTTPException(400, str(result.get("why") or "could not restore that version"))
-        # The file on disk changed, so the index is rebuilt from the files.
-        # Deliberately the whole index rather than the one note: a restored note
-        # may be one that the index had no row for at all (it was deleted), and
-        # "which rows need to change" is a question the files already answer.
-        db.rebuild_from(vault.list_all())
-        return {"ok": True, **result, "history": _history_state()}
+    # History owns its router and the recorder called after note writes.
+    app.include_router(history_router)
 
     @app.get("/api/insight")
     def insights():
@@ -1050,139 +902,11 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         return {"created": [n.to_dict() for n in created]}
 
     # -- workspaces ---------------------------------------------------------
-    #
-    # A note with `path:` is the home for a folder: its branch, what is
-    # uncommitted, when it was last committed, what markers the code carries.
-    # The folder is read on every request rather than cached, because a cache is
-    # a second answer that goes stale the moment you commit something.
+    # Workspace owns its routes and the live-state reader shared with home.
+    app.include_router(workspace_router)
 
-    def _workspace_states(notes) -> list[dict]:
-        """Every workspace note's folder, read now, in the order they are shown.
-
-        One reader for the view, the dashboard card and (through the note) the
-        editor panel, so the same folder cannot be described two ways.
-        """
-        now = datetime.now(timezone.utc)
-        states = []
-        for note in notes:
-            if not workspace.is_workspace_note(note):
-                continue
-            state = workspace_run.state_for_note(note, now=now)
-            if state:
-                states.append(state)
-        return workspace.sort_states(states)
-
-    @app.get("/api/workspaces")
-    def list_workspaces():
-        """Every note that points at a folder, and what that folder is *now*.
-
-        Read here rather than in the browser so the list, the editor panel and
-        the dashboard card cannot disagree -- and so a folder is read once per
-        request instead of once per place it appears.
-        """
-        states = _workspace_states(vault.list_all())
-        summary = workspace.summarize(states)
-        return {
-            "summary": summary,
-            # The sentence comes from the same place as the counts, so a card
-            # cannot say "all settled" while the counts say otherwise.
-            "line": workspace.attention_line(summary),
-            "workspaces": states,
-            "tools": workspace_run.tools(),
-        }
-
-    # A note with `url:` is a bookmark: an address you wanted to keep, sitting in the
-    # vault you already back up and can grep. "Services and the like" is a list, and a
-    # browser's bookmarks bar is the one place a list cannot be read from a file.
-
-    @app.get("/api/bookmarks")
-    def list_bookmarks():
-        """Every note that points at an address, grouped the way its tags say.
-
-        No I/O beyond the index, deliberately: unlike a workspace there is nothing on
-        the other end to ask. A bookmark says where something is, not whether it is up,
-        and this app does not probe your services.
-        """
-        return bookmarks.view([n for n in vault.list_all() if bookmarks.is_bookmark(n)])
-
-    @app.post("/api/bookmarks/check")
-    def check_bookmarks():
-        """Ask every bookmark's address whether it is answering, right now.
-
-        The only endpoint in this app that makes requests *outward*, and it is marked
-        as such because that is a real property of it: everything else reads the vault
-        or runs an allowlisted binary, and this one talks to whatever the vault's urls
-        point at. Bounded per address and run in parallel, so one dead host costs
-        seconds rather than the view -- and a failure comes back as a result, never as
-        an exception the view has to read.
-
-        The answer carries when it was taken. A status without a time is a claim about
-        the past dressed as one about the present.
-        """
-        notes = [n for n in vault.list_all() if bookmarks.is_bookmark(n)]
-        urls = [u for u in (bookmarks.url_of(n) for n in notes) if u]
-        return health_run.check_all(urls)
-
-    @app.get("/api/workspaces/{note_id}")
-    def get_workspace(note_id: str):
-        """One workspace. A note that is not one is not found, rather than
-        answered with an empty state that looks like a broken folder.
-
-        Carries `tools` too: the editor panel shows the same open buttons, and a
-        button that is disabled because the *panel* did not know what is
-        installed would be the app stating something false about this machine.
-        """
-        try:
-            note = vault.read(note_id)
-        except (KeyError, FileNotFoundError):
-            raise HTTPException(404, f"no note {note_id!r}")
-        state = workspace_run.state_for_note(note, now=datetime.now(timezone.utc))
-        if state is None:
-            raise HTTPException(404, f"note {note_id!r} does not point at a folder")
-        state["tools"] = workspace_run.tools()
-        return state
-
-    @app.post("/api/workspaces/{note_id}/open")
-    def open_workspace(note_id: str, payload: dict, request: Request):
-        """Open a workspace's folder: in your editor, a terminal, the files app.
-
-        **This is the one endpoint in the app that starts a process**, so it is
-        the one endpoint that asks for something a cross-origin page cannot send
-        without a preflight. There is no auth here and never was, which is
-        tolerable while every other endpoint only edits notes -- but a web page
-        you merely visited should not be able to launch a terminal on your
-        machine, and without this header check it could.
-
-        It reports the argv it ran, so the app can tell you what it did instead
-        of implying it.
-        """
-        if request.headers.get("x-nookboard-action") != "open":
-            raise HTTPException(
-                403, "this action needs the app's own request (X-Nookboard-Action)"
-            )
-        what = str(payload.get("what") or "").strip()
-        if what not in workspace.OPEN_ACTIONS:
-            raise HTTPException(400, f"what must be one of {list(workspace.OPEN_ACTIONS)}")
-        try:
-            note = vault.read(note_id)
-        except (KeyError, FileNotFoundError, ValueError):
-            raise HTTPException(404, f"no note {note_id!r}")
-        path = workspace.path_field(note)
-        if path is None:
-            raise HTTPException(404, f"note {note_id!r} does not point at a folder")
-        # `file` and `line` are how a card asks for a *place* in the folder --
-        # a marker's `file:line`, or one of the changed file names. Both come
-        # from the request, so both are checked before anything is spawned:
-        # `inside_folder` refuses anything that is not a real file inside this
-        # workspace, and a refusal here is a bad request (400), not a missing
-        # thing (409) -- the request asked for something it may not have.
-        result = workspace_run.open_workspace(
-            path, what, file=payload.get("file"), line=payload.get("line")
-        )
-        if not result.get("ok"):
-            raise HTTPException(400 if result.get("invalid") else 409,
-                                result.get("error") or "could not open it")
-        return result
+    # Bookmarks own their listing and address-health routes.
+    app.include_router(bookmark_router)
 
     @app.get("/api/export.zip")
     def export_zip():
@@ -1462,6 +1186,9 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         except (TypeError, ValueError):
             raise HTTPException(400, f"{field} must be an ISO date, got {value!r}")
 
+    template_router = build_template_router(vault, _index, _coerce_date)
+    app.include_router(template_router)
+
     @app.get("/api/daily/{day}")
     def daily_state(day: str):
         """What a day's note currently holds, and what it is owed."""
@@ -1581,77 +1308,6 @@ def create_app(vault_root: Path | None = None, settings: Settings | None = None)
         if payload.get("refresh"):
             db.clear_weekly_generated(target)
         return await _generate_weekly(target)
-
-    # -- templates (API) ----------------------------------------------------
-
-    def _free_note_id(by_id: dict) -> str:
-        """An id for a note the app is about to create.
-
-        Minted here rather than trusted from the client: this is a note the app
-        made, and a caller that sent a duff id would have the write land on top
-        of whatever already sits at that id.
-        """
-        stamp = int(datetime.now().timestamp() * 1000)
-        candidate = f"tpl-{stamp:x}"
-        n = 2
-        while candidate in by_id:
-            candidate = f"tpl-{stamp:x}-{n}"
-            n += 1
-        return candidate
-
-    @app.get("/api/templates")
-    def list_templates():
-        """The shapes a note can be made from."""
-        notes, _ = _index()
-        return {
-            "collection": templates.TEMPLATES_COLLECTION,
-            "templates": [
-                {
-                    "id": n.id,
-                    "title": n.title,
-                    "signifier": n.signifier.value,
-                    "tags": list(n.tags),
-                    "body": n.body,
-                    "placeholders": sorted(
-                        {
-                            m.lower()
-                            for m in templates.PLACEHOLDER_RE.findall(n.body)
-                            + templates.PLACEHOLDER_RE.findall(n.title)
-                        }
-                        & set(templates.KNOWN)
-                    ),
-                }
-                for n in templates.list_templates(notes)
-            ],
-        }
-
-    @app.post("/api/templates/apply")
-    def apply_template(payload: dict):
-        """Make a note from a template, by id or by title."""
-        wanted = str(payload.get("template") or "").strip()
-        notes, by_id = _index()
-        source = by_id.get(wanted) or next(
-            (n for n in templates.list_templates(notes) if n.title.lower() == wanted.lower()),
-            None,
-        )
-        if source is None or not templates.is_template(source):
-            raise HTTPException(404, f"no template {wanted!r}")
-
-        day = _coerce_date(payload["date"], "date") if payload.get("date") else date.today()
-        note = templates.build_note(
-            source,
-            note_id=_free_note_id(by_id),
-            title=payload.get("title"),
-            collection=str(payload.get("collection") or "").strip() or "inbox",
-            day=day,
-            # Notes only: a template's title is the shape of a name, not a name
-            # already spoken for. Counting the templates would make every
-            # template reserve its own title, so the first note made from
-            # "Weekly shop" would be "Weekly shop (2)" and the second "(3)".
-            taken={n.title for n in notes if not templates.is_template(n)},
-        )
-        vault.write(note)
-        return note.to_dict()
 
     # -- queries in notes (API) ---------------------------------------------
 
